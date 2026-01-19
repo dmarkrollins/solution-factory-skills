@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Generate a status report of project progress.
-Shows completed/remaining stories for current phase.
+Shows completed/remaining stories for current phase and epic information.
 """
 
 import json
@@ -23,6 +23,8 @@ def get_status():
         progress = json.load(f)
 
     current_phase = progress.get('currentPhase', 1)
+    current_epic = progress.get('currentEpic')
+    next_epic_to_generate = progress.get('nextEpicToGenerate')
     completed_stories = progress.get('completedStories', [])
     current_story = progress.get('currentStory')
 
@@ -59,6 +61,8 @@ def get_status():
 
     return {
         'currentPhase': current_phase,
+        'currentEpic': current_epic,
+        'nextEpicToGenerate': next_epic_to_generate,
         'totalStories': total_stories,
         'completed': completed_count,
         'remaining': remaining_count,

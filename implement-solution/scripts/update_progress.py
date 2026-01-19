@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Update implementation-progress.json with story progress.
-Supports: start, complete, add-blocker, add-test-file actions.
+Supports: start, complete, add-blocker, add-test-file, set-epic, set-next-epic-to-generate actions.
 """
 
 import json
@@ -23,10 +23,18 @@ def update_progress(action, story_number=None, test_files=None, blocker=None, no
     else:
         progress = {
             'currentPhase': 1,
+            'currentEpic': None,
+            'nextEpicToGenerate': 1,
             'preferences': {},
             'currentStory': None,
             'completedStories': []
         }
+
+    # Ensure epic fields exist (for backwards compatibility with old files)
+    if 'currentEpic' not in progress:
+        progress['currentEpic'] = None
+    if 'nextEpicToGenerate' not in progress:
+        progress['nextEpicToGenerate'] = 1
 
     if action == 'start':
         if not story_number:
@@ -90,6 +98,28 @@ def update_progress(action, story_number=None, test_files=None, blocker=None, no
 
         progress['preferences'][story_number] = test_files[0]  # key=story_number, value=test_files[0]
 
+    elif action == 'set-epic':
+        # Set the current epic number
+        if not story_number:
+            return {'success': False, 'error': 'epic number required (use --story parameter)'}
+
+        try:
+            epic_num = int(story_number)
+            progress['currentEpic'] = epic_num
+        except ValueError:
+            return {'success': False, 'error': f'Invalid epic number: {story_number}'}
+
+    elif action == 'set-next-epic-to-generate':
+        # Set the next epic number to generate
+        if not story_number:
+            return {'success': False, 'error': 'epic number required (use --story parameter)'}
+
+        try:
+            epic_num = int(story_number)
+            progress['nextEpicToGenerate'] = epic_num
+        except ValueError:
+            return {'success': False, 'error': f'Invalid epic number: {story_number}'}
+
     else:
         return {'success': False, 'error': f'Unknown action: {action}'}
 
@@ -103,7 +133,8 @@ def update_progress(action, story_number=None, test_files=None, blocker=None, no
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Update implementation progress')
     parser.add_argument('--action', required=True,
-                        choices=['start', 'complete', 'add-blocker', 'add-test-file', 'set-preference'],
+                        choices=['start', 'complete', 'add-blocker', 'add-test-file', 'set-preference',
+                                'set-epic', 'set-next-epic-to-generate'],
                         help='Action to perform')
     parser.add_argument('--story', help='Story number')
     parser.add_argument('--test-files', nargs='*', help='Test file paths')

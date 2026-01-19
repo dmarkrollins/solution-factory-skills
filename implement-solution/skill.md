@@ -41,6 +41,36 @@ Find and display the next uncompleted story, offer to start working on it.
    - If `inProgress: true`: Display current story and ask "Continue working on story X.XXX?"
    - Otherwise: Display next story details
 
+2.5. **Check for epic boundary** (if next story starts new epic):
+   - Parse epic number from next story
+   - Read last completed story from `implementation-progress.json`
+   - If last completed story exists:
+     - Parse epic number from last completed story
+     - If epic numbers differ (crossing epic boundary):
+       ```bash
+       python3 ~/.claude/skills/implement-solution/scripts/detect_epic_boundary.py --story=[last-completed-story]
+       ```
+       - If `isLastInEpic: true`:
+         - Display reminder:
+           ```
+
+           ⚠️  Epic [#] Testing Checkpoint
+
+           Before starting Epic [next-epic], please ensure:
+
+           ✓ Manual testing of Epic [#] is complete
+           ✓ All test scenarios in .project-work/testing/epic#/ passed
+           ✓ Any issues found have been documented
+
+           Epic [#] test documentation:
+           📁 .project-work/testing/epic#/
+
+           Continue to Epic [next-epic]?
+           ```
+         - Wait for user confirmation (yes/no)
+         - If user confirms no: STOP and remind to complete testing first
+         - If user confirms yes: proceed to next story
+
 3. **Display story information**:
    ```
    Story X.XXX: [Title]
@@ -455,6 +485,141 @@ Verify all work is done, run tests, merge to main, update progress.
       Summary: [auto-generated summary]
       ```
 
+8. **Check for epic boundary**:
+   ```bash
+   python3 ~/.claude/skills/implement-solution/scripts/detect_epic_boundary.py --story=[story-number]
+   ```
+   Parse result to check `isLastInEpic`
+
+9. **If epic complete** (`isLastInEpic: true`):
+
+   a. **Create test documentation structure**:
+      ```bash
+      python3 ~/.claude/skills/implement-solution/scripts/generate_epic_tests.py --epic=[epic-number]
+      ```
+
+   b. **Gather epic context**:
+      - Read all completed stories in epic from `implementation-progress.json`
+      - Read all plan files for epic stories from `.project-work/plans/`
+      - Get git log for epic to understand changes:
+        ```bash
+        # Find commits for all stories in epic
+        git log --oneline --grep="Epic [epic-number]" --all
+        ```
+      - Get files changed across epic:
+        ```bash
+        # Compare from start of epic to current HEAD
+        git diff --stat [first-story-commit]..HEAD
+        ```
+
+   c. **Generate comprehensive test documentation**:
+
+      **Create `.project-work/testing/epic#/README.md`:**
+      - Epic Overview section:
+        - Epic number and theme (extract from phase-N-stories.md epic header)
+        - What was implemented (summary of all stories in epic)
+        - Total stories completed
+        - Key files modified/created (from git diff stats)
+      - Quick Start section:
+        - Prerequisites to run tests (dependencies, setup needed)
+        - How to execute tests (step-by-step)
+        - Expected time to complete testing
+      - Test Summary section:
+        - Link to detailed test-plan.md
+        - Link to test scripts directory
+        - Overview of what needs to be tested
+
+      **Create `.project-work/testing/epic#/test-plan.md`:**
+      - Objectives section:
+        - What this epic accomplished
+        - Why manual testing matters for this epic
+        - Integration points to verify
+      - Test Scenarios section:
+        - For each story or major feature in epic:
+          - Scenario description
+          - Steps to test manually
+          - Expected outcome
+          - How to verify success
+      - Acceptance Criteria Verification:
+        - Checklist of ALL acceptance criteria from ALL stories in epic
+        - Instructions on how to verify each criterion
+        - [ ] Format for user to check off
+      - Edge Cases section:
+        - Edge cases to test
+        - Expected behavior for edge cases
+        - Error scenarios to verify
+      - Known Limitations section:
+        - Any known issues or future work
+        - What was intentionally deferred
+
+      **Create test scripts in `.project-work/testing/epic#/test-scripts/`:**
+      - If applicable for the epic, create:
+        - Automated test scripts (API calls, CLI commands)
+        - Setup scripts (database seeding, environment setup)
+        - Teardown scripts (cleanup)
+        - Sample curl commands or API test collections
+      - If automated tests not applicable:
+        - Create `manual-test-guide.sh` with commented test commands
+        - Document manual verification steps
+
+      **Create test data in `.project-work/testing/epic#/test-data/`:**
+      - Sample input data files (JSON, CSV, etc.) if applicable
+      - Expected output examples
+      - Test database fixtures or seed data
+      - Configuration files needed for testing
+      - If not applicable, create `README.md` explaining no test data needed
+
+   d. **Commit test documentation**:
+      ```bash
+      git add .project-work/testing/epic#
+      git commit -m "Add comprehensive test documentation for Epic #"
+      ```
+
+   e. **Update epic tracking**:
+      ```bash
+      python3 ~/.claude/skills/implement-solution/scripts/update_progress.py \
+        --action=set-epic \
+        --story=[next-epic-number]
+      ```
+
+   f. **Prompt for manual testing**:
+      ```
+
+      ═══════════════════════════════════════════════════════════════
+      🎯 Epic [#] Complete!
+      ═══════════════════════════════════════════════════════════════
+
+      All [X] stories in Epic [#] have been implemented and merged.
+
+      Comprehensive test documentation has been created in:
+      📁 .project-work/testing/epic#/
+
+      ┌─────────────────────────────────────────────────────────────┐
+      │ MANUAL TESTING REQUIRED                                      │
+      ├─────────────────────────────────────────────────────────────┤
+      │ Please review and execute the test plan to verify all epic   │
+      │ functionality works correctly before proceeding.              │
+      │                                                              │
+      │ 1. Review: .project-work/testing/epic#/README.md            │
+      │ 2. Follow: .project-work/testing/epic#/test-plan.md         │
+      │ 3. Run: Test scripts in test-scripts/ (if applicable)       │
+      │ 4. Verify: All acceptance criteria met                      │
+      │ 5. Document: Any issues found during testing                │
+      └─────────────────────────────────────────────────────────────┘
+
+      When testing is complete and epic is verified:
+      ✅ Run: /implement-solution next
+
+      This will continue to Epic [next-epic-number].
+
+      ═══════════════════════════════════════════════════════════════
+      ```
+
+   g. **STOP** - Do not automatically proceed to next story
+      - User must complete manual testing
+      - User must explicitly run `/implement-solution next` to continue
+      - This ensures quality gate is enforced
+
 ## Handling Blockers
 
 If story is blocked at any point:
@@ -504,6 +669,8 @@ Show summary of project progress.
 2. **Parse result and display**:
    ```
    Phase [N] Progress: [X] completed, [Y] remaining of [Z] total stories
+   Current Epic: [N] (or "Not set" if null)
+   Next Epic to Generate: [N] (or "Not set" if null)
 
    [If current story exists:]
    Currently working on: Story [X.XXX] (started [HH]h [MM]m ago)
