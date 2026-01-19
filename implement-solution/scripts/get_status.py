@@ -34,8 +34,8 @@ def get_status():
     with open(stories_file, 'r') as f:
         content = f.read()
 
-    # Count stories by finding story headers
-    story_headers = re.findall(r'##\s+Story\s+[\d.]+:', content)
+    # Count stories by finding story headers (format: Epic#.Story### e.g., 1.003, 2.024)
+    story_headers = re.findall(r'##\s+Story\s+\d+\.\d{3}:', content)
     total_stories = len(story_headers)
     completed_count = len(completed_stories)
     remaining_count = total_stories - completed_count

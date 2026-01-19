@@ -87,8 +87,8 @@ def get_next_story():
         with open(stories_file, 'r') as f:
             content = f.read()
 
-        # Split by story headers
-        story_blocks = re.split(r'\n(?=## Story \d+\.\d+:)', content)
+        # Split by story headers (format: Epic#.Story### e.g., 1.003, 2.024)
+        story_blocks = re.split(r'\n(?=## Story \d+\.\d{3}:)', content)
         for block in story_blocks:
             story = parse_story(block)
             if story and story['storyNumber'] == current_story['storyNumber']:
@@ -103,8 +103,8 @@ def get_next_story():
     with open(stories_file, 'r') as f:
         content = f.read()
 
-    # Split by story headers
-    story_blocks = re.split(r'\n(?=## Story \d+\.\d+:)', content)
+    # Split by story headers (format: Epic#.Story### e.g., 1.003, 2.024)
+    story_blocks = re.split(r'\n(?=## Story \d+\.\d{3}:)', content)
 
     for block in story_blocks:
         story = parse_story(block)

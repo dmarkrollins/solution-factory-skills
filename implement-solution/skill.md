@@ -15,7 +15,7 @@ Parse arguments to determine command:
 All workflow state stored in `.project-work/`:
 1. **implementation-progress.json**: Source of truth for progress tracking
 2. **phase-N-stories.md**: Story definitions for each phase
-3. **plans/N.NN-plan.md**: Individual plan files per story
+3. **plans/N.NNN-plan.md**: Individual plan files per story
 
 # Command Routing
 
@@ -38,12 +38,12 @@ Find and display the next uncompleted story, offer to start working on it.
 2. **Parse result**:
    - If `error`: Display error and stop
    - If `complete: true`: Display "All stories in phase N completed!"
-   - If `inProgress: true`: Display current story and ask "Continue working on story X.XX?"
+   - If `inProgress: true`: Display current story and ask "Continue working on story X.XXX?"
    - Otherwise: Display next story details
 
 3. **Display story information**:
    ```
-   Story X.XX: [Title]
+   Story X.XXX: [Title]
    Complexity: N/10
    Description: [Description]
    Dependencies: [List or "None"]
@@ -53,7 +53,7 @@ Find and display the next uncompleted story, offer to start working on it.
    - Criterion 2
    ```
 
-4. **Ask user**: "Start working on this story?"
+4. **Ask user**: "Start working on this story? /implement-solution start N.NNN"
 
 5. **If yes**: Execute the "start" command workflow
 
@@ -83,7 +83,7 @@ Begin work on a story: establish context, create feature branch, interview, plan
    ```bash
    git checkout -b feature/[story-number]
    ```
-   - Example: `feature/1.01`
+   - Example: `feature/1.001`
 
 ## Update Progress Tracking
 
@@ -99,15 +99,16 @@ CRITICAL: Before beginning requirements interview, establish full context.
 5. **Clear conversation context**: Start fresh for this story
 
 6. **Read project documentation**:
-   - Use Glob to find all `.md` files in `/docs` root (exclude subdirectories):
+   - Extract structured documentation using extract_docs.py:
      ```bash
-     ls docs/*.md
+     python3 ~/.claude/skills/implement-solution/scripts/extract_docs.py
      ```
-   - Read each markdown file found (these are context-setting docs like roadmap, architecture decisions, phase plans)
+   - Review extracted JSON containing headings, key sentences, lists, code blocks, and tables
+   - Create story-specific summary focusing on aspects relevant to current story
 
 7. **Review codebase**:
    - Use Task tool with subagent_type=Explore to understand codebase structure
-   - Prompt: "Explore codebase to understand structure, key components, and relevant areas for story [X.XX]: [story title]"
+   - Prompt: "Explore codebase to understand structure, key components, and relevant areas for story [X.XXX]: [story title]"
    - Set thoroughness to "medium"
 
 8. **Read current story**:
@@ -117,7 +118,11 @@ CRITICAL: Before beginning requirements interview, establish full context.
 9. **Read dependency stories and plans** (if any):
    - For each dependency listed in story:
      - Read dependency story from `phase-N-stories.md`
-     - Read dependency plan from `.project-work/plans/[dep-number]-plan.md`
+     - Get dependency plan summary using get_dependency_summary.py:
+       ```bash
+       python3 ~/.claude/skills/implement-solution/scripts/get_dependency_summary.py --story=[dep-number]
+       ```
+     - Review JSON containing Success Criteria, Why This Approach, and Dependencies sections only
 
 ## Requirements Interview
 
@@ -193,7 +198,7 @@ CRITICAL: NOT optional. After initial plan:
 Write plan to `.project-work/plans/[story-number]-plan.md` using this structure:
 
 ```markdown
-# Story [X.XX]: [Title]
+# Story [X.XXX]: [Title]
 
 ## Implementation Steps
 
@@ -408,7 +413,7 @@ Verify all work is done, run tests, merge to main, update progress.
 6. **Show summary and ask for confirmation**:
    - Display generated summary
    - Show git diff stats
-   - Ask: "Ready to merge story [X.XX] to main?"
+   - Ask: "Ready to merge story [X.XXX] to main?"
 
 7. **If user approves**:
 
@@ -440,12 +445,12 @@ Verify all work is done, run tests, merge to main, update progress.
    d. **Commit progress update**:
       ```bash
       git add .project-work/implementation-progress.json
-      git commit -m "Update progress: Story [X.XX] completed"
+      git commit -m "Update progress: Story [X.XXX] completed"
       ```
 
    e. **Display completion**:
       ```
-      ✅ Story [X.XX] completed and merged to main
+      ✅ Story [X.XXX] completed and merged to main
       Duration: [N] minutes
       Summary: [auto-generated summary]
       ```
@@ -501,7 +506,7 @@ Show summary of project progress.
    Phase [N] Progress: [X] completed, [Y] remaining of [Z] total stories
 
    [If current story exists:]
-   Currently working on: Story [X.XX] (started [HH]h [MM]m ago)
+   Currently working on: Story [X.XXX] (started [HH]h [MM]m ago)
    Test files: [list]
    Blockers: [list if any]
    ```
@@ -568,7 +573,7 @@ If a story is already in progress (currentStory exists with no completed_at):
    - Check which success criteria are complete
    - Review recent commits on feature branch
 
-3. **Ask user**: "Continue working on story [X.XX]?"
+3. **Ask user**: "Continue working on story [X.XXX]?"
 
 4. **If yes**:
    - Resume from current point in plan
