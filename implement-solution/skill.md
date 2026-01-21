@@ -230,6 +230,8 @@ Write plan to `.project-work/plans/[story-number]-plan.md` using this structure:
 ```markdown
 # Story [X.XXX]: [Title]
 
+**Complexity:** N/10
+
 ## Implementation Steps
 
 ### Step 1: [Name]
@@ -291,33 +293,16 @@ CRITICAL: Mandatory gate.
     - Plan written to file
 
 19. **Present plan to user**:
+    - **MUST display story complexity** (e.g., "Story X.XXX - Complexity: N/10")
     - Show simplified plan
     - Show simplification review
     - Request explicit approval
 
 20. **If user rejects**: Revise plan based on feedback, repeat review
 
-## Ask Preferences (One-Time)
-
-21. **Check if preferences already stored**:
-    - Read `implementation-progress.json`
-    - If `preferences.testingStrategy` exists, skip asking
-
-22. **If preferences not stored, ask**:
-
-    **Testing Strategy:**
-    - Check for existing tests in repository
-    - Ask: "Tests [exist/don't exist]. For this implementation: (a) Run existing tests after each step, (b) Write new tests alongside changes, (c) Skip testing"
-    - Store choice: `testingStrategy: [run-existing|write-new|skip]`
-
-23. **Store preferences**:
-    ```bash
-    python3 ~/.claude/skills/implement-solution/scripts/update_progress.py --action=set-preference --story=testingStrategy --test-files=[value]
-    ```
-
 ## Execute Plan
 
-24. **For EACH Step in the Plan**:
+21. **For EACH Step in the Plan**:
 
     **Before Step**:
     - Review step details and requirements
@@ -327,6 +312,7 @@ CRITICAL: Mandatory gate.
     - Execute step tasks
     - Make changes to achieve expected outcomes
     - Add implementation notes
+    - **If step involves code changes, write unit tests alongside the implementation** (follow existing test patterns)
 
     **After Step**:
 
@@ -336,26 +322,23 @@ CRITICAL: Mandatory gate.
        ```
        Summarize in 2-3 bullets what changed
 
-    b. **Test** (if testing strategy not "skip"):
-       - If "run-existing": Run existing test suite
-       - If "write-new": Write tests for this step first, then run
+    b. **Test** (MANDATORY - NOT OPTIONAL):
+       - **ALWAYS run the full test suite** after each step to identify regression problems immediately
+       - Run project test command (e.g., `npm test`, `pytest`, `go test`)
        - If tests fail:
          ```bash
          python3 ~/.claude/skills/implement-solution/scripts/update_progress.py --action=add-blocker --blocker="Tests failing: [details]"
          ```
          - Fix issues before proceeding
          - Do NOT move to next step until tests pass
+         - Document what broke and how it was fixed
 
     c. **Mark success criteria** (if this step completes a criterion):
        ```bash
        python3 ~/.claude/skills/implement-solution/scripts/update_plan_checkbox.py --story=[story-number] --criterion="[criterion text]"
        ```
 
-    d. **User Checkpoint**:
-       - Ask: "Ready to commit this step?"
-       - Wait for confirmation
-
-    e. **Commit**:
+    d. **Commit automatically**:
        ```bash
        git add [relevant files]
        git commit -m "Step N: [step name] - [brief context]"
@@ -364,19 +347,19 @@ CRITICAL: Mandatory gate.
        - Atomic commits per step
        - Example: `git commit -m "Step 3: Add validation - email format and password strength"`
 
-    f. **Record test files** (if new tests written):
+    e. **Record test files** (if new tests written):
        ```bash
        python3 ~/.claude/skills/implement-solution/scripts/update_progress.py --action=add-test-file --test-files=[test file paths]
        ```
 
-25. **Continue until all steps complete**
+22. **Continue until all steps complete**
 
 ## Definition of Done (Per Step)
 
 **Step is complete when ALL apply**:
 - Expected outcomes achieved
 - Minimal code changes (no over-engineering)
-- Tests pass (if testing enabled)
+- **All tests pass** (full test suite run after each step - MANDATORY)
 - No new errors/warnings introduced
 - Changes committed to feature branch
 - Relevant success criteria marked complete in plan
@@ -406,9 +389,8 @@ Verify all work is done, run tests, merge to main, update progress.
      - **STOP** - do not proceed to testing or merge
      - User must complete remaining criteria first
 
-3. **Run all tests** (based on testing strategy):
-   - If testing strategy is "skip": Skip this step
-   - Otherwise run full test suite:
+3. **Run all tests** (MANDATORY):
+   - Run full test suite:
      ```bash
      # Run appropriate test command for project
      npm test  # or pytest, go test, etc.
@@ -775,10 +757,11 @@ If a story is already in progress (currentStory exists with no completed_at):
 - Merge only when all criteria met and tests pass
 
 ## Testing
-- Respect user's testing strategy choice
-- Never skip tests if strategy is not "skip"
-- Block progress on test failures
-- Write tests alongside code if strategy is "write-new"
+- **MANDATORY**: Always run full test suite after each step to catch regressions immediately
+- **MANDATORY**: Write unit tests alongside code changes for all story implementations
+- Block progress on test failures - do not proceed until tests pass
+- Follow existing test patterns in the codebase
+- Tests must be comprehensive and cover acceptance criteria
 
 ## Communication
 - Ask ONE question at a time (except tightly coupled questions)
