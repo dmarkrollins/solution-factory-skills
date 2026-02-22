@@ -406,7 +406,111 @@ Verify all work is done, run tests, merge to main, update progress.
    - **Do NOT merge** - stay on feature branch
    - **STOP** - user must fix tests and run complete again
 
-5. **If tests pass**, generate completion summary:
+5. **If tests pass**, detect if story has testable implementation:
+   - Read files changed from git diff
+   - If ONLY documentation changes (.md files, ADR entries): Skip validation test generation
+   - Otherwise: Proceed to generate validation tests
+
+6. **Generate validation test scripts** (if testable implementation exists):
+
+   a. **Determine story type**:
+      - API endpoint: Check for route definitions, handler functions
+      - UI feature: Check for component files
+      - Database: Check for schema/migration files
+      - Infrastructure: Check for SST/CDK config files
+      - Mixed: Combination of above
+
+   b. **Choose test language**:
+      - API endpoints → bash with curl
+      - UI features → markdown manual test guide
+      - Database operations → Python
+      - Infrastructure → bash with AWS CLI
+      - Lambda functions → JavaScript/Node.js
+
+   c. **Generate test structure**:
+      Create `.project-work/tests/epic-{N}/story-{N.NNN}/`:
+      - `README.md` - Setup instructions, prerequisites, overview
+      - `test-all.sh` - Orchestrator that runs all tests with pauses
+      - `test-happy-path.{ext}` - Successful scenarios
+      - `test-edge-cases.{ext}` - Boundary conditions
+      - `test-error-handling.{ext}` - Validation failures and errors
+      - `test-data/` - Sample inputs (if needed)
+
+   d. **Script documentation standard**:
+      Every test script must include header:
+      ```bash
+      #!/bin/bash
+      # test-{category}.sh
+      #
+      # {Category} Tests for Story {N.NNN}: {Story Title}
+      #
+      # Tests:
+      #   - Specific test scenario 1
+      #   - Specific test scenario 2
+      #   - Specific test scenario 3
+      #
+      # Prerequisites:
+      #   - What needs to be running
+      #   - What data/users need to exist
+      #   - Required environment variables
+      #
+      # Expected: All tests output ✅ PASS
+      ```
+
+   e. **Generate test-all.sh orchestrator**:
+      - Clear screen and show header
+      - Run test-happy-path with pause
+      - Run test-edge-cases with pause
+      - Run test-error-handling with pause
+      - Display final summary
+      - Color-coded output (📗 happy, 📙 edge, 📕 errors)
+
+   f. **Generate category-specific tests**:
+      - Parse acceptance criteria from plan
+      - Map criteria to test categories (happy/edge/error)
+      - Generate executable test scripts with pass/fail output
+      - Include color coding (✅ PASS / ❌ FAIL)
+      - Tests assume local dev environment
+      - Tests assume prerequisite stories' functionality works
+
+   g. **Test script requirements**:
+      - One script per category (happy path, edge cases, error handling)
+      - Clear documentation header
+      - Self-contained (creates own test data if needed)
+      - Validates ALL relevant acceptance criteria
+      - Clear pass/fail output with colors
+      - Exits with error code on failure
+
+7. **Commit validation test scripts**:
+   ```bash
+   git add .project-work/tests/epic-{N}/story-{N.NNN}/
+   git commit -m "Add validation tests for story {N.NNN}"
+   ```
+
+8. **Prompt user to run validation tests**:
+   ```
+   ┌─────────────────────────────────────────────────────────────┐
+   │ VALIDATION TESTING REQUIRED                                  │
+   ├─────────────────────────────────────────────────────────────┤
+   │ Validation tests generated for story {N.NNN}                 │
+   │                                                              │
+   │ Location: .project-work/tests/epic-{N}/story-{N.NNN}/       │
+   │                                                              │
+   │ 1. Start local dev: npm run dev                             │
+   │ 2. Setup environment (see README.md)                        │
+   │ 3. Navigate: cd .project-work/tests/epic-{N}/story-{N.NNN}/ │
+   │ 4. Make executable: chmod +x *.sh                           │
+   │ 5. Run: ./test-all.sh                                       │
+   │ 6. Verify: All tests show ✅ PASS                           │
+   └─────────────────────────────────────────────────────────────┘
+
+   Have you run ./test-all.sh and confirmed all tests passed? (yes/no)
+   ```
+
+   - If user says **yes**: Continue to step 9
+   - If user says **no**: STOP and display "Please run validation tests before merging. This ensures the implementation meets all acceptance criteria."
+
+9. **Generate completion summary**:
    - Read git commits on feature branch:
      ```bash
      git log main..HEAD --oneline
@@ -422,58 +526,58 @@ Verify all work is done, run tests, merge to main, update progress.
      - Success criteria met
    - Example: "Implemented Cognito user pool with email verification and password policy enforcement (5 files changed, 3 commits)"
 
-6. **Show summary and ask for confirmation**:
-   - Display generated summary
-   - Show git diff stats
-   - Ask: "Ready to merge story [X.XXX] to main?"
+10. **Show summary and ask for confirmation**:
+    - Display generated summary
+    - Show git diff stats
+    - Ask: "Ready to merge story [X.XXX] to main?"
 
-7. **If user approves**:
+11. **If user approves**:
 
-   a. **Merge to main**:
-      ```bash
-      git checkout main
-      git merge --no-ff feature/[story-number] -m "[auto-generated summary]"
-      ```
+    a. **Merge to main**:
+       ```bash
+       git checkout main
+       git merge --no-ff feature/[story-number] -m "[auto-generated summary]"
+       ```
 
-   b. **Delete feature branch**:
-      ```bash
-      git branch -d feature/[story-number]
-      ```
+    b. **Delete feature branch**:
+       ```bash
+       git branch -d feature/[story-number]
+       ```
 
-   c. **Update progress** with completion:
-      ```bash
-      python3 ~/.claude/skills/implement-solution/scripts/update_progress.py \
-        --action=complete \
-        --story=[story-number] \
-        --notes="[auto-generated summary]"
-      ```
-      This will:
-      - Set `completed_at` timestamp
-      - Calculate `duration_minutes`
-      - Set `notes` with auto-generated summary
-      - Move `currentStory` to `completedStories` array
-      - Clear `currentStory` to null
+    c. **Update progress** with completion:
+       ```bash
+       python3 ~/.claude/skills/implement-solution/scripts/update_progress.py \
+         --action=complete \
+         --story=[story-number] \
+         --notes="[auto-generated summary]"
+       ```
+       This will:
+       - Set `completed_at` timestamp
+       - Calculate `duration_minutes`
+       - Set `notes` with auto-generated summary
+       - Move `currentStory` to `completedStories` array
+       - Clear `currentStory` to null
 
-   d. **Commit progress update**:
-      ```bash
-      git add .project-work/implementation-progress.json
-      git commit -m "Update progress: Story [X.XXX] completed"
-      ```
+    d. **Commit progress update**:
+       ```bash
+       git add .project-work/implementation-progress.json
+       git commit -m "Update progress: Story [X.XXX] completed"
+       ```
 
-   e. **Display completion**:
-      ```
-      ✅ Story [X.XXX] completed and merged to main
-      Duration: [N] minutes
-      Summary: [auto-generated summary]
-      ```
+    e. **Display completion**:
+       ```
+       ✅ Story [X.XXX] completed and merged to main
+       Duration: [N] minutes
+       Summary: [auto-generated summary]
+       ```
 
-8. **Check for epic boundary**:
+12. **Check for epic boundary**:
    ```bash
    python3 ~/.claude/skills/implement-solution/scripts/detect_epic_boundary.py --story=[story-number]
    ```
    Parse result to check `isLastInEpic`
 
-9. **If epic complete** (`isLastInEpic: true`):
+13. **If epic complete** (`isLastInEpic: true`):
 
    a. **Create test documentation structure**:
       ```bash
@@ -636,6 +740,160 @@ If story is blocked at any point:
 
 ---
 
+# Validation Test Structure
+
+## Overview
+
+Each story with testable implementation gets validation tests in `.project-work/tests/epic-{N}/story-{N.NNN}/`. These are **integration/smoke tests** that prove the implementation works, separate from unit tests.
+
+## Three-Dimensional Test Organization
+
+Tests are organized into three categories:
+
+1. **Happy Path** (`test-happy-path.{ext}`): Successful scenarios, expected use cases
+2. **Edge Cases** (`test-edge-cases.{ext}`): Boundary conditions, unusual inputs
+3. **Error Handling** (`test-error-handling.{ext}`): Validation failures, error scenarios
+
+## Orchestrator Pattern
+
+The `test-all.sh` script runs all test categories sequentially with pauses:
+
+```bash
+#!/bin/bash
+# Runs all tests with user-controlled pacing
+# - Clears screen between categories
+# - Displays progress with colored headers (📗 📙 📕)
+# - Pauses between categories (user presses Enter)
+# - Shows final summary
+```
+
+## Test Script Standards
+
+### Header Documentation
+
+Every test script MUST start with:
+
+```bash
+#!/bin/bash
+# test-{category}.sh
+#
+# {Category} Tests for Story {N.NNN}: {Story Title}
+#
+# Tests:
+#   - Specific test scenario 1
+#   - Specific test scenario 2
+#
+# Prerequisites:
+#   - What needs to be running (e.g., npm run dev)
+#   - What data/users need to exist
+#   - Required environment variables
+#
+# Expected: All tests output ✅ PASS
+```
+
+### Output Format
+
+- Color-coded results: `✅ PASS` (green) / `❌ FAIL` (red)
+- Clear test descriptions: `Test 1: Valid login returns 200...`
+- Exit with non-zero code on failure
+- Display response details on failure
+
+### Test Principles
+
+- **Self-contained**: Creates own test data if needed
+- **Assumes prerequisites work**: Dependencies from other stories are functional
+- **Local environment**: Tests against local dev (npm run dev)
+- **Clear validation**: Each test validates one specific thing
+- **Fast feedback**: Immediate pass/fail, no waiting
+
+## Language Selection
+
+Test language chosen based on story type:
+
+| Story Type | Language | Rationale |
+|------------|----------|-----------|
+| API endpoints | Bash + curl | Simple, direct HTTP testing |
+| UI features | Markdown | Manual test guide with steps |
+| Database | Python | Better DB connection handling |
+| Infrastructure | Bash + AWS CLI | Native AWS resource inspection |
+| Lambda functions | JavaScript | Can invoke/test directly |
+
+## Example: API Endpoint Story
+
+For a POST /auth/login endpoint:
+
+**test-happy-path.sh:**
+- Valid credentials return 200
+- Response includes JWT tokens
+- Response includes user profile
+- Profile has required fields
+
+**test-edge-cases.sh:**
+- Email case insensitivity
+- Whitespace handling
+- Special characters in password
+- Empty string inputs
+
+**test-error-handling.sh:**
+- Invalid credentials return 401
+- Missing email returns 400
+- Missing password returns 400
+- Invalid email format returns 400
+- Malformed JSON returns 400
+
+## README.md Structure
+
+```markdown
+# Story {N.NNN} Validation Tests
+
+## Overview
+What this story implemented and what tests validate
+
+## Prerequisites
+- Start commands (npm run dev)
+- Required environment variables
+- Test data setup instructions
+
+## Running Tests
+### Option 1: Run All (Recommended)
+./test-all.sh
+
+### Option 2: Individual Categories
+./test-happy-path.sh
+./test-edge-cases.sh
+./test-error-handling.sh
+
+## Test Coverage
+Lists what each category tests
+
+## Success Criteria
+All tests should show ✅ PASS
+```
+
+## When Tests Are Skipped
+
+Validation tests are ONLY skipped when:
+- Story contains ONLY documentation changes (.md files, ADRs)
+- No executable code was modified
+- No API endpoints, UI, or infrastructure changes
+
+## Integration with Complete Workflow
+
+1. Unit tests pass ✅
+2. Generate validation tests
+3. Commit validation tests
+4. **USER RUNS** validation tests manually
+5. User confirms all passed
+6. Merge to main
+
+This ensures:
+- Implementation works end-to-end
+- User verifies before merge
+- Tests serve as usage documentation
+- Quality gate enforced
+
+---
+
 # Command: status
 
 ## Purpose
@@ -759,9 +1017,12 @@ If a story is already in progress (currentStory exists with no completed_at):
 ## Testing
 - **MANDATORY**: Always run full test suite after each step to catch regressions immediately
 - **MANDATORY**: Write unit tests alongside code changes for all story implementations
+- **MANDATORY**: Generate validation tests for each story (happy path, edge cases, error handling)
+- **MANDATORY**: User must run and confirm validation tests pass before merge
 - Block progress on test failures - do not proceed until tests pass
 - Follow existing test patterns in the codebase
-- Tests must be comprehensive and cover acceptance criteria
+- Unit tests cover code behavior, validation tests prove end-to-end functionality
+- Validation tests serve as executable documentation and usage examples
 
 ## Communication
 - Ask ONE question at a time (except tightly coupled questions)
@@ -802,3 +1063,11 @@ If a story is already in progress (currentStory exists with no completed_at):
 - Resolve conflicts manually
 - Re-run tests after resolution
 - Continue merge process
+
+## "Validation tests failing"
+- Check prerequisites (local dev running, environment variables set)
+- Review test output for specific failure reason
+- Verify implementation meets acceptance criteria
+- May need to fix implementation or adjust test expectations
+- Don't merge until validation tests pass
+- Tests can be run individually to isolate failures
