@@ -16,7 +16,11 @@ Break down a phase objective into a single epic with sequenced stories that buil
 - Collaborative refinement with user
 
 **Arguments:**
-- `--max-complexity=N` - Maximum story complexity (default: 3)
+- `--max-complexity=N` - Maximum complexity per story (default: 3)
+- `--epic-max-complexity=N` - Maximum total complexity across all stories in the epic (default: 25)
+- `--epic-max-stories=N` - Maximum number of stories in the epic (default: 10)
+
+Epic generation stops when either `--epic-max-complexity` or `--epic-max-stories` is reached, whichever comes first.
 
 **Input:** `/docs/phase-N-plan.md` (phase objective and requirements)
 
@@ -42,7 +46,8 @@ Break down a phase objective into a single epic with sequenced stories that buil
    ```
    Generating Epic [N] for Phase [P]
    Last Completed Epic: [N-1] (or "None" if first epic)
-   Max Complexity: [X]/10
+   Max Story Complexity: [X]/10
+   Epic Limits: [epic-max-complexity] total points OR [epic-max-stories] stories (whichever is hit first)
    ```
 
 ---
@@ -96,8 +101,9 @@ CRITICAL: Gather full context before generating stories.
 
 9. **Consider epic boundaries**:
    - **Functional logic**: Related features that work together
-   - **Complexity budget**: Aim for 5-8 stories, total complexity 15-25 points
+   - **Hard limits**: Stop adding stories when `epic-max-complexity` total OR `epic-max-stories` count is reached — whichever comes first
    - **Testable milestone**: End epic when there's something meaningful to manually test
+   - **Overflow**: If functional scope exceeds epic limits, flag remaining scope to carry into Epic N+1
    - Epic should deliver cohesive, demonstrable value
 
 ### 3b. Draft Initial Stories
@@ -112,79 +118,63 @@ CRITICAL: Gather full context before generating stories.
 
 11. **Apply Complexity Rubric to each story**:
 
-    **Complexity Scoring Framework (0-10 scale):**
+    **Complexity Scoring Framework (0-10 scale, max per story: 3):**
 
-    **1. Technical Complexity (0-3 points):**
-    - **0 points**: Trivial
-      - Edit existing pattern, no new concepts
-      - Example: Change hardcoded value, update text
-    - **1 point**: Simple
-      - New file using existing patterns
-      - Minimal logic, straightforward implementation
-      - Example: Add new model field, create basic CRUD endpoint
-    - **2 points**: Moderate
-      - New pattern/approach in codebase
-      - Multiple files affected
-      - Moderate logic complexity
-      - Example: Implement validation layer, add middleware
-    - **3 points**: Complex
-      - New architecture or framework integration
-      - Significant new concepts
-      - Complex logic or algorithms
-      - Example: Implement authentication system, add caching layer
+    **1. Change Surface (0-3 points):** How many distinct areas of the codebase are touched
+    - **0 points**: Single file, single concern
+      - Example: Update a config value, fix a typo in a label
+    - **1 point**: 2-3 files, same layer
+      - Example: Add a new model field and update its migration
+    - **2 points**: Multiple layers (e.g., model + service + API)
+      - Example: Add a new endpoint with business logic and DB access
+    - **3 points**: Full stack (frontend + API + backend + infra)
+      - Example: Implement a feature end-to-end across all system layers
 
-    **2. Scope Size (0-3 points):**
-    - **0 points**: Tiny
-      - 1-2 acceptance criteria
-      - Single responsibility
-      - Example: Add email validation to one field
-    - **1 point**: Small
-      - 3-4 acceptance criteria
-      - Focused feature
-      - Example: Create registration form with basic validation
-    - **2 points**: Medium
-      - 5-6 acceptance criteria
-      - Multiple related features
-      - Example: Implement user profile with multiple sections
-    - **3 points**: Large
-      - 7+ acceptance criteria
-      - Broad functionality
-      - Example: Build entire authentication flow
+    **2. Implementation Complexity (0-3 points):** How hard is the actual coding
+    - **0 points**: Copy existing pattern, trivial logic
+      - Example: Add a field to an existing form using the same pattern as other fields
+    - **1 point**: New file using familiar patterns
+      - Example: Create a new route handler following established conventions
+    - **2 points**: New patterns or moderate logic complexity
+      - Example: Implement input validation with conditional branching
+    - **3 points**: New architecture, complex algorithms, or framework integration
+      - Example: Integrate a new third-party service, implement a caching strategy
 
-    **3. Risk/Uncertainty (0-2 points):**
-    - **0 points**: Clear
-      - Well-understood requirements
-      - No unknowns or dependencies on external systems
-      - Example: Add field to existing form
-    - **1 point**: Some uncertainty
-      - Minor unknowns that can be resolved quickly
-      - Manageable risks
-      - Example: Integrate with documented third-party API
-    - **2 points**: High uncertainty
-      - Significant unknowns or unclear requirements
-      - External dependencies with uncertain behavior
-      - Example: Integrate with poorly documented system
+    **3. Uncertainty (0-2 points):** How well understood are the requirements
+    - **0 points**: Crystal clear, no unknowns
+      - Example: Add a required field with known validation rules
+    - **1 point**: Minor unknowns, quickly resolved
+      - Example: Integrate with a well-documented external API
+    - **2 points**: Significant unknowns or unclear requirements
+      - Example: Integrate with a poorly documented system, or requirements still being defined
 
-    **4. Integration Complexity (0-2 points):**
-    - **0 points**: Isolated
-      - Single module, no integration
-      - Example: Add helper function to utils
-    - **1 point**: Moderate
-      - Touches 2-3 modules/systems
-      - Straightforward integration points
-      - Example: Connect frontend form to backend endpoint
-    - **2 points**: Complex
-      - Touches 4+ modules/systems
-      - Intricate integration points, data flow across boundaries
-      - Example: Coordinate changes across frontend, API, database, and queue system
+    **4. Scope (0-2 points):** Breadth of acceptance criteria
+    - **0 points**: 1-2 criteria, single focus
+      - Example: Add email format validation to one field
+    - **1 point**: 3-4 criteria, focused feature
+      - Example: Create a registration form with basic validation
+    - **2 points**: 5+ criteria, broad functionality
+      - Example: Implement a user profile with multiple editable sections
 
     **Total Score:** Sum of all dimensions = 0-10
+
+    **Calibration guide:**
+    - Score of 0-1: Trivial change, very granular story
+    - Score of 2-3: Normal story, at or within threshold — good to proceed
+    - Score of 4+: Too complex, must split before continuing
 
 12. **Calculate and record complexity** for each drafted story:
     - Analyze each story against the rubric
     - Assign points for each dimension
     - Sum to get total complexity score
     - Flag any story where total > max-complexity
+    - After scoring each story, update running totals:
+      - Running story count
+      - Running total complexity
+    - **Stop adding stories** if either limit would be exceeded:
+      - Story count reaches `epic-max-stories`
+      - Adding next story would push total complexity past `epic-max-complexity`
+    - If remaining functional scope exists when limits are hit, note it as overflow for Epic N+1
 
 ### 3d. Split High-Complexity Stories
 
@@ -195,7 +185,7 @@ CRITICAL: Gather full context before generating stories.
 
     b. **Apply appropriate splitting strategy**:
 
-       **If Scope is high (2-3 points):**
+       **If Scope is high (2 points):**
        - Split by acceptance criteria (group related criteria)
        - Split by functional areas
        - Example: "User profile with settings and preferences" →
@@ -203,7 +193,7 @@ CRITICAL: Gather full context before generating stories.
          - Story B: "Add user settings section"
          - Story C: "Add user preferences section"
 
-       **If Technical is high (2-3 points):**
+       **If Implementation Complexity is high (2-3 points):**
        - Split by layers (model → service → API → UI)
        - Split by implementation phases
        - Example: "Implement caching with Redis" →
@@ -211,7 +201,7 @@ CRITICAL: Gather full context before generating stories.
          - Story B: "Implement cache read/write methods"
          - Story C: "Integrate caching into API endpoints"
 
-       **If Risk is high (2 points):**
+       **If Uncertainty is high (2 points):**
        - Create spike/research story first
        - Then create implementation stories based on findings
        - Example: "Integrate with unknown payment gateway" →
@@ -219,8 +209,8 @@ CRITICAL: Gather full context before generating stories.
          - Story B: "Implement basic payment flow"
          - Story C: "Add error handling and edge cases"
 
-       **If Integration is high (2 points):**
-       - Split by integration point or system boundary
+       **If Change Surface is high (2-3 points):**
+       - Split by layer or system boundary
        - Example: "Connect frontend, API, and database for orders" →
          - Story A: "Create order database model and queries"
          - Story B: "Create order API endpoints"
@@ -237,48 +227,48 @@ CRITICAL: Gather full context before generating stories.
 *Original Story (Complexity: 8):*
 ```
 Title: Implement user registration with email verification, password validation, and duplicate checking
-Technical: 3 (new auth flow)
-Scope: 3 (7+ criteria)
-Risk: 1 (external email service)
-Integration: 1 (2 systems)
+Change Surface: 2 (model + service + API)
+Implementation Complexity: 3 (new auth flow)
+Uncertainty: 1 (external email service)
+Scope: 2 (5+ criteria)
 Total: 8
 ```
 
 *After Split (each ≤ 3):*
 ```
 Story 5.001: Create user model with basic fields
-Technical: 1 (new file, existing pattern)
-Scope: 1 (3 criteria: model, validation, tests)
-Risk: 0 (clear requirements)
-Integration: 0 (single module)
-Total: 2
+Change Surface: 1 (model + migration)
+Implementation Complexity: 1 (new file, existing pattern)
+Uncertainty: 0 (clear requirements)
+Scope: 1 (3 criteria: model, migration, basic test)
+Total: 3
 
 Story 5.002: Add registration endpoint - happy path only
-Technical: 1 (new endpoint, standard pattern)
+Change Surface: 1 (service + API layer)
+Implementation Complexity: 1 (new endpoint, standard pattern)
+Uncertainty: 0 (clear requirements)
 Scope: 1 (3 criteria: endpoint, success response, basic test)
-Risk: 0 (clear requirements)
-Integration: 1 (connects model to API)
 Total: 3
 
 Story 5.003: Add email format validation
-Technical: 1 (use validation library)
+Change Surface: 0 (single file)
+Implementation Complexity: 1 (use validation library)
+Uncertainty: 0 (well-understood)
 Scope: 1 (3 criteria: validation, error message, test)
-Risk: 0 (well-understood)
-Integration: 0 (single module)
 Total: 2
 
 Story 5.004: Add password strength requirements
-Technical: 1 (validation rules)
+Change Surface: 0 (single file)
+Implementation Complexity: 1 (validation rules)
+Uncertainty: 0 (clear requirements)
 Scope: 1 (3 criteria: strength check, error message, test)
-Risk: 0 (clear requirements)
-Integration: 0 (single module)
 Total: 2
 
 Story 5.005: Add duplicate user checking
-Technical: 1 (database query)
-Scope: 2 (5 criteria: query, check logic, error handling, response, test)
-Risk: 0 (clear requirements)
-Integration: 0 (single module)
+Change Surface: 1 (service + DB query)
+Implementation Complexity: 1 (database query)
+Uncertainty: 0 (clear requirements)
+Scope: 1 (4 criteria: query, check logic, error response, test)
 Total: 3
 ```
 
@@ -350,8 +340,11 @@ Total: 3
     - [ ] Each story can be implemented independently given its dependencies are complete
     - [ ] Each story delivers testable value
     - [ ] All complexity scores ≤ max-complexity threshold
+    - [ ] Total story count ≤ epic-max-stories
+    - [ ] Total complexity points ≤ epic-max-complexity
     - [ ] Stories progress logically toward epic objective
     - [ ] Epic as a whole represents a testable milestone
+    - [ ] If overflow exists, it is documented clearly for Epic N+1
 
 ### 3g. Format Stories
 
@@ -442,9 +435,11 @@ Brief description of what this epic accomplishes toward the phase objective.
     ═══════════════════════════════════════════════════════════════
 
     Phase: [N]
-    Stories: [X]
-    Total Complexity: [Y] points
-    Complexity Range: [min]-[max] (all within max-complexity threshold of [Z])
+    Stories: [X] / [epic-max-stories] max
+    Total Complexity: [Y] / [epic-max-complexity] max
+    Per-Story Range: [min]-[max] (all within max-complexity threshold of [Z])
+    Epic Limit Hit: [Stories limit | Complexity limit | Neither — scope fully covered]
+    Overflow to Epic N+1: [description of remaining scope, or "None"]
 
     Epic Objective:
     [What this epic accomplishes toward phase goal - 2-3 sentences]
@@ -602,10 +597,11 @@ Brief description of what this epic accomplishes toward the phase objective.
 
 ## Epic Boundaries
 
+- **Hard limits enforced**: Stop at `epic-max-stories` OR `epic-max-complexity` total, whichever comes first
 - **Testable milestones**: Epic should end when there's something meaningful to manually test
 - **Cohesive functionality**: Stories in an epic should relate to each other
-- **Reasonable size**: 5-10 stories typical, adjust based on complexity
 - **Phase alignment**: Epic should clearly contribute to phase objective
+- **Overflow is expected**: Large features naturally span multiple epics — document what carries over
 
 ## Collaboration
 
@@ -635,6 +631,22 @@ If `--max-complexity` is not 1-10:
 1. Display error: "Max complexity must be between 1 and 10"
 2. Suggest: "Use --max-complexity=3 (default) for balanced story size"
 3. STOP - user must provide valid value
+
+## Invalid Epic Constraints
+
+If `--epic-max-complexity` is not a positive integer:
+1. Display error: "Epic max complexity must be a positive integer"
+2. Suggest: "Use --epic-max-complexity=25 (default)"
+3. STOP
+
+If `--epic-max-stories` is not a positive integer:
+1. Display error: "Epic max stories must be a positive integer"
+2. Suggest: "Use --epic-max-stories=10 (default)"
+3. STOP
+
+If `--epic-max-complexity` < `--max-complexity`:
+1. Display error: "Epic max complexity ([X]) must be >= max story complexity ([Y]) — otherwise no stories can ever be added"
+2. STOP
 
 ## No Implementation Progress File
 
@@ -675,10 +687,9 @@ If trying to generate epic that already exists in phase-N-stories.md:
 - Consider if foundation stories are missing
 
 ## "Epic scope too broad"
-- Epic has 15+ stories
-- Consider if epic should be split into two epics
-- Look for natural break point (testable milestone)
-- Each epic should be manually testable as a unit
+- Epic limits are enforced automatically — this should not happen if limits are applied during generation
+- If user manually added stories pushing past limits, trim stories back and document overflow for Epic N+1
+- Adjust `--epic-max-complexity` or `--epic-max-stories` if defaults are too tight for the project
 
 ## "Can't determine next epic"
 - get_next_epic.py returns unexpected result
