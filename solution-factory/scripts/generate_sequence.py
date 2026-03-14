@@ -150,7 +150,16 @@ if __name__ == "__main__":
     if args.command == "add-epic":
         result = add_epic(args.epic, args.root)
     elif args.command == "add-story":
-        result = add_story(args.epic, args.story, args.dependencies, args.insert_before, args.root)
+        # Normalize --dependencies: accept either space-separated IDs or a JSON array string
+        # e.g. --dependencies 01.004 01.005
+        #      --dependencies '["01.004","01.005"]'
+        deps = args.dependencies or []
+        if len(deps) == 1 and deps[0].startswith("["):
+            try:
+                deps = json.loads(deps[0])
+            except json.JSONDecodeError:
+                pass
+        result = add_story(args.epic, args.story, deps, args.insert_before, args.root)
     elif args.command == "update-status":
         result = update_status(args.story, args.status, args.root)
     elif args.command == "update-epic-status":
