@@ -78,20 +78,30 @@ Display formatted list of stories with IDs, titles, statuses.
 
 ## GATE 0: Context Cleanliness
 
+First, read `.solution-factory/config.json` to determine gate behavior:
+```bash
+# Check gates config — default is "warn" if not present
+cat .solution-factory/config.json
+```
+The `gates.context_cleanliness` field controls behavior: `"warn"` (default) or `"stop"` (hard block).
+
 ```bash
 python3 ~/.claude/skills/solution-factory/scripts/check_context.py
 ```
 
-- If not clean → **WARN**: "Consider running /clear for a clean context before starting a new story."
-- This is a warning, not a hard block.
+- If not clean AND gate is `"warn"` → **WARN**: "Consider running /clear for a clean context before starting a new story." Continue.
+- If not clean AND gate is `"stop"` → **STOP**: "Context is not clean. Run /clear before starting a new story. (Configured as hard stop in .solution-factory/config.json `gates.context_cleanliness`)"
 
 ## GATE 1: Environment Check
+
+The `gates.venv_check` field in `.solution-factory/config.json` controls behavior: `"warn"` (default) or `"stop"` (hard block).
 
 ```bash
 python3 ~/.claude/skills/solution-factory/scripts/check_venv.py
 ```
 
-- If no venv → **WARN** (not block)
+- If no venv AND gate is `"warn"` → **WARN** (not block)
+- If no venv AND gate is `"stop"` → **STOP**: "No active virtual environment detected. Activate one before starting. (Configured as hard stop in .solution-factory/config.json `gates.venv_check`)"
 
 ## PHASE 1: Story Resolution
 
@@ -140,9 +150,16 @@ If UX story with wireframe reference → read wireframe file.
 ### 3b. Explore Codebase
 
 Use Agent tool with subagent_type=Explore, **model=haiku**:
-- "Explore codebase for patterns relevant to story [ID]: [title]"
 - Thoroughness: "medium"
 - Haiku is sufficient for read-only codebase reconnaissance
+
+The exploration prompt **MUST** instruct the agent to:
+1. Read all files directly named or referenced in the story
+2. Search for **related patterns across the entire codebase** — e.g., if the story fixes a bug in one file, search for the same bug pattern in sibling files
+3. Run TypeScript/lint checks if applicable to surface any pre-existing errors
+4. Identify all files that will need to change to fully satisfy the acceptance criteria
+
+**The goal is a holistic picture, not just the named file.** The plan must reflect the full scope of changes needed — not just the obvious entry point. If related files have the same issue, they belong in the plan.
 
 ### 3c. Requirements Interview
 
@@ -224,7 +241,7 @@ Complexity Re-Assessment:
 
 ### 3f. User Approval
 
-Present plan and **WAIT for explicit approval**.
+Present the **complete plan.md contents** to the user verbatim — do NOT summarize, abbreviate, or omit any sections. Every section of the plan template must be visible to the user, including `## NOT Doing (YAGNI)`. Then **WAIT for explicit approval**.
 
 - If rejected → revise based on feedback, re-present
 - If approved → **save plan.md (MANDATORY before any code)**
@@ -444,7 +461,8 @@ Create/review a plan for a story without starting implementation.
 
 | Gate | Rule | Violation = |
 |------|------|-------------|
-| Context | Warn if no recent /clear | Warning |
+| Context | Configurable via `config.json` `gates.context_cleanliness` — default `warn`, set `stop` to hard block | **Warn** or **STOP** |
+| Venv | Configurable via `config.json` `gates.venv_check` — default `warn`, set `stop` to hard block | **Warn** or **STOP** |
 | Planning | No code before user-approved plan | **STOP** |
 | Complexity | Must show re-assessment block | **STOP** |
 | Plan.md | Must save before creating branch | **STOP** |
