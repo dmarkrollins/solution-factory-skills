@@ -20,7 +20,8 @@ def check_venv():
     else:
         return {
             "active": False,
-            "warning": "No Python virtual environment detected. Consider activating one before proceeding."
+            "warning": "No Python virtual environment detected.",
+            "fix": "Run: source ~/.claude/skills/solution-factory/.venv/bin/activate"
         }
 
 

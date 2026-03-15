@@ -64,11 +64,18 @@ Read `sequence.json` to understand what epics already exist:
 python3 ~/.claude/skills/solution-factory/scripts/get_status.py
 ```
 
-Ask the user: **"What is the focus of this epic?"** (one question)
+### 3a. Detect insertion mode
+
+**If the user's request references an existing in-progress epic** (e.g. mentions specific files, bugs, or topics already covered by a backlog epic), check whether the new stories belong in that epic rather than a new one.
+
+- If adding to an **existing epic** → skip "What is the focus?" question, proceed with the known scope. Set `insertion_mode: true`.
+- If creating a **new epic** → ask: **"What is the focus of this epic?"** (one question)
+
+### 3b. Define scope
 
 Based on their answer + documentation + existing context:
 - Define epic theme and objective
-- Determine epic number (next available)
+- Determine epic number (next available, or existing if `insertion_mode`)
 - Identify functional boundaries
 
 ---
@@ -118,6 +125,35 @@ Re-score after splitting. Repeat until all stories ≤ threshold.
 4. Add integration stories last
 
 For each story, list ALL prerequisite story IDs.
+
+### 4d-insert. Insertion point analysis (insertion_mode only)
+
+**MANDATORY when adding stories to an existing in-progress epic.**
+
+Before choosing where to insert, reason through:
+
+1. **Noise impact** — Will the new story's unresolved state produce compiler errors, test failures, or misleading output during other stories' quality gates? If yes, it should run **before** those stories.
+2. **Unblocking** — Does the new story fix something that other backlog stories depend on or assume is already working? If yes, insert before the earliest affected story.
+3. **Safety** — Is it purely additive with no side effects on existing backlog work? If yes, appending last is fine.
+
+Apply the rule:
+- **Noisy or unblocking** → find the earliest backlog story that would be affected, insert before it
+- **Neutral** → append after current backlog tail
+
+Read the backlog from `sequence.json` and explicitly state your insertion reasoning before writing files. Example:
+```
+Insertion analysis:
+  New story fixes: TypeScript compiler errors in auth/ and processors/
+  Affected backlog stories: all (tsc --noEmit runs on every story)
+  Earliest affected: 01.002 (next in sequence)
+  Decision: insert before 01.002
+```
+
+Use `--insert-before` when calling `generate_sequence.py add-story`:
+```bash
+python3 ~/.claude/skills/solution-factory/scripts/generate_sequence.py add-story \
+  --epic epic-NN --story NN.NNN --insert-before NN.NNN
+```
 
 ### 4e. Evaluate Against Context
 

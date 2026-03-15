@@ -101,7 +101,7 @@ python3 ~/.claude/skills/solution-factory/scripts/check_venv.py
 ```
 
 - If no venv AND gate is `"warn"` → **WARN** (not block)
-- If no venv AND gate is `"stop"` → **STOP**: "No active virtual environment detected. Activate one before starting. (Configured as hard stop in .solution-factory/config.json `gates.venv_check`)"
+- If no venv AND gate is `"stop"` → **STOP**: "No active virtual environment detected. Run `source ~/.claude/skills/solution-factory/.venv/bin/activate` then retry. (Configured as hard stop in .solution-factory/config.json `gates.venv_check`)"
 
 ## PHASE 1: Story Resolution
 
