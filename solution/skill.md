@@ -12,6 +12,16 @@ Implement stories from `.solution-factory/` one at a time with mandatory quality
 
 Parse arguments to determine subcommand. Default to `next` if no arguments.
 
+## Working Directory Rule
+
+**CRITICAL — applies to every command in every phase:**
+
+All `python3 ~/.claude/skills/solution-factory/scripts/...` invocations **must** be prefixed with the project root:
+```bash
+cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/...
+```
+Never assume the cwd is correct after running package-level commands (e.g. `npm test`, `npx tsc`, `cd packages/...`). Always anchor to the project root before invoking solution-factory scripts.
+
 ---
 
 # Subcommand Routing
@@ -237,11 +247,16 @@ Complexity Re-Assessment:
 ```
 
 - If changed → update story YAML, document in local.md
-- If > threshold → **MUST offer to split** — do not proceed without resolution
+- If After Planning score > 3 → **MUST offer to split** — do not proceed without resolution
 
 ### 3f. User Approval
 
-Present the **complete plan.md contents** to the user verbatim — do NOT summarize, abbreviate, or omit any sections. Every section of the plan template must be visible to the user, including `## NOT Doing (YAGNI)`. Then **WAIT for explicit approval**.
+Present to the user **in this exact order**:
+
+1. The **Complexity Re-Assessment block** (from 3e) — always show this, even if unchanged
+2. The **complete plan.md contents** verbatim — do NOT summarize, abbreviate, or omit any sections. Every section of the plan template must be visible, including `## NOT Doing (YAGNI)`
+
+Then **WAIT for explicit approval**.
 
 - If rejected → revise based on feedback, re-present
 - If approved → **save plan.md (MANDATORY before any code)**
@@ -304,14 +319,14 @@ If either tier fails → fix before proceeding. Do NOT move to completion.
 
 **MANDATORY — all 3 scripts + runner.**
 
-Use Agent tool with **model=haiku** to generate demo scripts. Provide the agent with:
+Use Agent tool with **model=sonnet** to generate demo scripts. Provide the agent with:
 - Story acceptance criteria
 - Files changed (from git diff)
 - Story title and description
 
-Prompt: "Generate demo test scripts for story [ID]: [title]. Acceptance criteria: [list]. Files changed: [list]. Create 4 files in `.solution-factory/tests/[EPIC_ID]/[STORY_ID]/`: demo_happy_path.py, demo_edge_cases.py, demo_error_handling.py, run_all_demos.py"
+Prompt: "Generate demo test scripts for story [ID]: [title]. Acceptance criteria: [list]. Files changed: [list]. Create EXACTLY 4 files in `.solution-factory/tests/[EPIC_ID]/[STORY_ID]/`: demo_happy_path.py, demo_edge_cases.py, demo_error_handling.py, run_all_demos.py. DO NOT create any README, index, manifest, output log, or any other files beyond these 4."
 
-Haiku is sufficient for templated test generation from structured inputs.
+Sonnet is required here for precise instruction-following and accurate file path/assertion generation.
 
 After generation:
 ```bash
@@ -496,7 +511,8 @@ Create/review a plan for a story without starting implementation.
 
 **Three-tier model strategy:**
 - **Scripts** (zero tokens): Gates 0-1, Phases 1-2, Phase 6 file operations
-- **Haiku subagents** (low tokens): Codebase exploration, demo script generation, summary.md writing
+- **Haiku subagents** (low tokens): Codebase exploration, summary.md writing
+- **Sonnet subagents** (medium tokens): Demo script generation (requires precise instruction-following and accurate assertions)
 - **Sonnet/Opus** (full tokens): Planning, implementation, requirements interview, discovery scoring
 
 **Context compression:**
