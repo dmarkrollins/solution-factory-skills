@@ -100,9 +100,26 @@ CONFIG (.solution-factory/config.json — stories block):
   automerge, generate_demo_scripts, require_tests, complexity threshold, and
   discovery relevance thresholds all apply in BOTH modes.
 
+STOP / RESUME AN EPIC RUN
+  Hit Escape to interrupt, then:
+    /solution stop     saves run state to the epic JSON (via epic_run_manager.py)
+                       and commits it — safe to close Claude
+    /solution next     detects the paused run and resumes the EPIC-3 loop
+                       automatically; falls back to next single story if no run found
+
+  State is stored in the `run` block of .solution-factory/epics/<id>/<id>.json:
+    status: active | stopped | complete
+    current_story, review_merges, started_at, stopped_at
+
+CONFIG (.solution-factory/config.json — stories block):
+  automerge, generate_demo_scripts, require_tests, complexity threshold, and
+  discovery relevance thresholds all apply in BOTH modes.
+
 TYPICAL FLOW
   /solution status          see what's ready
-  /solution epic epic-03    run the epic; or `/solution next` to go story-by-story
+  /solution epic epic-03    run the epic unattended
+  /solution stop            pause mid-epic; close Claude
+  /solution next            resume where you left off
 ```
 
 ---
@@ -132,22 +149,14 @@ loop. Otherwise resolves the next single story and flows into planning.
 
 1. **Check for active epic run:**
    ```bash
-   cd $(git rev-parse --show-toplevel) && python3 -c "
-   import json, glob, sys
-   files = glob.glob('.solution-factory/epics/*/epic-*.json')
-   for f in files:
-       d = json.load(open(f))
-       run = d.get('run', {})
-       if run.get('status') in ('active', 'stopped'):
-           print(json.dumps({'found': True, 'epic_id': d['id'], 'title': d['title'], 'run': run}))
-           sys.exit(0)
-   print(json.dumps({'found': False}))
-   "
+   cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py find --root .
    ```
-   - If `found: true` → announce `[RESUMING EPIC] [epic_id]: [title]` and re-enter
-     the EPIC-3 orchestration loop using the stored `epic_id` and `review_merges`
-     from the `run` block. Set `run.status` back to `"active"` in the epic JSON
-     before entering the loop.
+   - If `found: true` → announce `[RESUMING EPIC] [epic_id]: [title]`, run
+     `start` to flip status back to `active`, then re-enter the EPIC-3
+     orchestration loop using the stored `epic_id` and `review_merges`:
+     ```bash
+     cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py start --epic [epic_id] --root .
+     ```
    - If `found: false` → continue to step 2.
 
 2. **Resolve next story:**
@@ -652,34 +661,15 @@ Pause an active epic run so the user can close Claude and resume later with
 
 1. **Find the active epic run:**
    ```bash
-   cd $(git rev-parse --show-toplevel) && python3 -c "
-   import json, glob, sys
-   files = glob.glob('.solution-factory/epics/*/epic-*.json')
-   for f in files:
-       d = json.load(open(f))
-       run = d.get('run', {})
-       if run.get('status') in ('active', 'stopped'):
-           print(json.dumps({'found': True, 'file': f, 'epic_id': d['id'], 'title': d['title'], 'run': run, 'stories': d['stories']}))
-           sys.exit(0)
-   print(json.dumps({'found': False}))
-   "
+   cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py find --root .
    ```
 
 2. **If not found:** display "No active epic run. Use `/solution status` to see
    current state." and STOP.
 
-3. **If found:** update the epic JSON — set `run.status = "stopped"` and
-   `run.stopped_at` to current UTC timestamp:
+3. **If found:** stop the run:
    ```bash
-   cd $(git rev-parse --show-toplevel) && python3 -c "
-   import json, datetime
-   f = '[PATH_FROM_STEP_1]'
-   d = json.load(open(f))
-   d['run']['status'] = 'stopped'
-   d['run']['stopped_at'] = datetime.datetime.utcnow().isoformat() + 'Z'
-   json.dump(d, open(f, 'w'), indent=2)
-   print('saved')
-   "
+   cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py stop --epic [epic_id] --root .
    ```
 
 4. **Display a summary:**
@@ -758,19 +748,7 @@ Run all [N] ready stories autonomously? (yes / no)
   Do not ask anything else until the run ends or a story blocks.
 
   ```bash
-  cd $(git rev-parse --show-toplevel) && python3 -c "
-  import json, datetime
-  f = '.solution-factory/epics/[EPIC_ID]/[EPIC_ID].json'
-  d = json.load(open(f))
-  d['run'] = {
-    'status': 'active',
-    'review_merges': [True|False],
-    'started_at': datetime.datetime.utcnow().isoformat() + 'Z',
-    'stopped_at': None,
-    'current_story': None
-  }
-  json.dump(d, open(f, 'w'), indent=2)
-  "
+  cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py start --epic [EPIC_ID] [--review-merges] --root .
   ```
 
 ## EPIC-3: Orchestration loop
@@ -802,13 +780,7 @@ Maintain a ledger in the main thread: `[{id, title, result, note}]`. Repeat:
 
    Update `run.current_story` after every story outcome:
    ```bash
-   cd $(git rev-parse --show-toplevel) && python3 -c "
-   import json
-   f = '.solution-factory/epics/[EPIC_ID]/[EPIC_ID].json'
-   d = json.load(open(f))
-   d['run']['current_story'] = '[NEXT_OR_CURRENT_STORY_ID]'
-   json.dump(d, open(f, 'w'), indent=2)
-   "
+   cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py update --epic [EPIC_ID] --story [NEXT_OR_CURRENT_STORY_ID] --root .
    ```
 
 **Announce only a compact line per story** in the main thread — never echo the
@@ -916,14 +888,10 @@ as `BLOCKED` (note: "worker reported success but status not updated") and stop.
 
 Mark the run complete (or stopped if blocked) in the epic JSON:
 ```bash
-cd $(git rev-parse --show-toplevel) && python3 -c "
-import json, datetime
-f = '.solution-factory/epics/[EPIC_ID]/[EPIC_ID].json'
-d = json.load(open(f))
-d['run']['status'] = 'complete'   # use 'stopped' if ending due to a blocker
-d['run']['current_story'] = None
-json.dump(d, open(f, 'w'), indent=2)
-"
+# On clean finish:
+cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py complete --epic [EPIC_ID] --root .
+# On blocker (leaves status=stopped so /solution next can resume):
+cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py stop --epic [EPIC_ID] --root .
 git add .solution-factory/epics/[EPIC_ID]/[EPIC_ID].json
 git commit -m "Finalize epic [EPIC_ID] run status"
 ```

@@ -66,9 +66,13 @@ _script_names = [
     "check_context",
     "check_venv",
     "wireframe_linker",
+    "epic_run_manager",
 ]
 for _name in _script_names:
-    _modules[_name] = _load(_name)
+    try:
+        _modules[_name] = _load(_name)
+    except FileNotFoundError:
+        pass  # script not yet implemented; tests for it will fail with KeyError
 
 
 # ---------------------------------------------------------------------------
@@ -1524,3 +1528,125 @@ class TestFullLifecycle:
         status = gs_mod.get_status(root=root)
         assert status["done"] == 1
         assert status["backlog"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 19. epic_run_manager
+# ---------------------------------------------------------------------------
+
+
+class TestEpicRunManager:
+    def _write_epic_json(self, proj, epic_id, extra=None):
+        epic_dir = proj / ".solution-factory" / "epics" / epic_id
+        epic_dir.mkdir(parents=True, exist_ok=True)
+        data = {"id": epic_id, "title": f"Epic {epic_id}", "stories": []}
+        if extra:
+            data.update(extra)
+        (epic_dir / f"{epic_id}.json").write_text(json.dumps(data, indent=2))
+        return epic_dir
+
+    def test_start_run_writes_run_block(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        result = erm.start_run("epic-01", review_merges=False, root=str(proj))
+        assert result["success"] is True
+        assert result["run"]["status"] == "active"
+        assert result["run"]["review_merges"] is False
+        assert result["run"]["started_at"] is not None
+        assert result["run"]["stopped_at"] is None
+        assert result["run"]["current_story"] is None
+
+    def test_start_run_review_merges_true(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        result = erm.start_run("epic-01", review_merges=True, root=str(proj))
+        assert result["run"]["review_merges"] is True
+
+    def test_start_run_missing_epic_errors(self, proj):
+        erm = _modules["epic_run_manager"]
+        result = erm.start_run("epic-99", review_merges=False, root=str(proj))
+        assert "error" in result
+
+    def test_stop_run_sets_status_and_timestamp(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        erm.start_run("epic-01", review_merges=False, root=str(proj))
+        result = erm.stop_run("epic-01", root=str(proj))
+        assert result["success"] is True
+        assert result["run"]["status"] == "stopped"
+        assert result["run"]["stopped_at"] is not None
+
+    def test_stop_run_preserves_other_fields(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        erm.start_run("epic-01", review_merges=True, root=str(proj))
+        erm.update_current_story("epic-01", "01.003", root=str(proj))
+        result = erm.stop_run("epic-01", root=str(proj))
+        assert result["run"]["review_merges"] is True
+        assert result["run"]["current_story"] == "01.003"
+
+    def test_stop_run_no_run_block_errors(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        result = erm.stop_run("epic-01", root=str(proj))
+        assert "error" in result
+
+    def test_complete_run_sets_status_and_clears_story(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        erm.start_run("epic-01", review_merges=False, root=str(proj))
+        erm.update_current_story("epic-01", "01.002", root=str(proj))
+        result = erm.complete_run("epic-01", root=str(proj))
+        assert result["success"] is True
+        assert result["run"]["status"] == "complete"
+        assert result["run"]["current_story"] is None
+
+    def test_update_current_story(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        erm.start_run("epic-01", review_merges=False, root=str(proj))
+        result = erm.update_current_story("epic-01", "01.004", root=str(proj))
+        assert result["success"] is True
+        assert result["current_story"] == "01.004"
+
+    def test_find_active_run_none_exist(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        result = erm.find_active_run(root=str(proj))
+        assert result["found"] is False
+
+    def test_find_active_run_finds_active(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        erm.start_run("epic-01", review_merges=False, root=str(proj))
+        result = erm.find_active_run(root=str(proj))
+        assert result["found"] is True
+        assert result["epic_id"] == "epic-01"
+        assert result["run"]["status"] == "active"
+
+    def test_find_active_run_finds_stopped(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        erm.start_run("epic-01", review_merges=False, root=str(proj))
+        erm.stop_run("epic-01", root=str(proj))
+        result = erm.find_active_run(root=str(proj))
+        assert result["found"] is True
+        assert result["run"]["status"] == "stopped"
+
+    def test_find_active_run_ignores_complete(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        erm.start_run("epic-01", review_merges=False, root=str(proj))
+        erm.complete_run("epic-01", root=str(proj))
+        result = erm.find_active_run(root=str(proj))
+        assert result["found"] is False
+
+    def test_find_active_run_returns_first_match(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        self._write_epic_json(proj, "epic-02")
+        erm = _modules["epic_run_manager"]
+        erm.start_run("epic-01", review_merges=False, root=str(proj))
+        erm.start_run("epic-02", review_merges=True, root=str(proj))
+        result = erm.find_active_run(root=str(proj))
+        assert result["found"] is True
+        assert result["epic_id"] == "epic-01"  # sorted glob, epic-01 first
