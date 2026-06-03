@@ -82,7 +82,26 @@ Tell the user: "I think we have enough to scaffold. Here's what I captured:" and
 
 ## Step 3: Create Artifacts
 
-### 3a. Write ADRs
+Delegate all artifact writing to the `documentation-writer` agent (**model=haiku** — this is formulaic writing). Provide the agent with:
+- Complete list of decisions captured in brainstorming (title, context, decision, consequences for each)
+- Complete list of constraints captured (title, type, constraint text, impact, mitigation for each)
+- Requirements summary and architecture overview from the conversation
+- Starting ADR number (count existing files: `ls .solution-factory/decisions/*.md 2>/dev/null | wc -l`)
+- Starting constraint number (same pattern)
+- The exact file formats specified below
+
+The agent creates all ADR files (`.solution-factory/decisions/adr-NNN.md`), constraint files (`.solution-factory/constraints/const-NNN.md`), and doc files (`.solution-factory/docs/`).
+
+After the agent returns, verify files were created:
+```bash
+ls .solution-factory/decisions/ .solution-factory/constraints/ .solution-factory/docs/
+```
+
+Then proceed directly to step 3d (capsule generation). Write config.json (3e) and manifest.json (3f) yourself — do not delegate these to the agent since they depend on config values the user will provide.
+
+**ADR format** (files in `.solution-factory/decisions/adr-NNN.md`):
+
+### 3a. ADR Format
 
 For each architectural decision identified, create a file in `.solution-factory/decisions/`:
 
@@ -103,7 +122,7 @@ For each architectural decision identified, create a file in `.solution-factory/
 [Trade-offs, implications]
 ```
 
-### 3b. Write Constraints
+### 3b. Constraint Format
 
 For each constraint identified, create a file in `.solution-factory/constraints/`:
 
@@ -124,7 +143,7 @@ For each constraint identified, create a file in `.solution-factory/constraints/
 [How to work within this constraint]
 ```
 
-### 3c. Write Documentation
+### 3c. Documentation Format
 
 Create relevant docs in `.solution-factory/docs/`:
 - `requirements.md` — captured requirements from brainstorming

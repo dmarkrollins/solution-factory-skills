@@ -19,7 +19,9 @@ DEFAULTS = {
         "auto_discard": 4
     },
     "stories": {
-        "require_tests": True
+        "require_tests": True,
+        "generate_demo_scripts": False,
+        "automerge": True
     },
     "ux": {
         "wireframe_path": None,

@@ -24,8 +24,14 @@ def load_story_yaml(story_id, epic_id, root="."):
     return None, None
 
 
-def resolve_next(root="."):
-    """Find the next story to work on."""
+def resolve_next(root=".", epic_filter=None):
+    """Find the next story to work on.
+
+    Dependency status is always evaluated globally (a story may depend on
+    stories in another epic). When epic_filter is set, only stories belonging
+    to that epic are eligible to be returned, but their cross-epic dependencies
+    are still honored.
+    """
     seq_path = Path(root) / ".solution-factory" / "sequence.json"
     if not seq_path.exists():
         return {"error": "sequence.json not found"}
@@ -33,14 +39,20 @@ def resolve_next(root="."):
     with open(seq_path, "r") as f:
         sequence = json.load(f)
 
-    # Build a lookup of all story statuses
+    epics = sequence.get("epics", [])
+    if epic_filter and not any(e["id"] == epic_filter for e in epics):
+        return {"error": f"epic '{epic_filter}' not found in sequence.json"}
+
+    # Build a lookup of all story statuses (global — deps can cross epics)
     status_map = {}
-    for epic in sequence.get("epics", []):
+    for epic in epics:
         for story in epic["stories"]:
             status_map[story["id"]] = story["status"]
 
-    # Check for active story first
-    for epic in sequence.get("epics", []):
+    # Check for active story first (scoped to epic_filter when set)
+    for epic in epics:
+        if epic_filter and epic["id"] != epic_filter:
+            continue
         for story in epic["stories"]:
             if story["status"] == "active":
                 story_data, _ = load_story_yaml(story["id"], epic["id"], root)
@@ -52,8 +64,10 @@ def resolve_next(root="."):
                     "message": f"Story {story['id']} is in progress"
                 }
 
-    # Find next ready story (array order)
-    for epic in sequence.get("epics", []):
+    # Find next ready story (array order; scoped to epic_filter when set)
+    for epic in epics:
+        if epic_filter and epic["id"] != epic_filter:
+            continue
         for story in epic["stories"]:
             if story["status"] != "backlog":
                 continue
@@ -73,11 +87,12 @@ def resolve_next(root="."):
                 }
 
     # No ready stories
-    return {"status": "complete", "message": "All stories completed or blocked"}
+    scope = f" in {epic_filter}" if epic_filter else ""
+    return {"status": "complete", "message": f"All stories{scope} completed or blocked"}
 
 
-def list_stories(status_filter=None, root="."):
-    """List all stories, optionally filtered by status."""
+def list_stories(status_filter=None, root=".", epic_filter=None):
+    """List all stories, optionally filtered by status and/or epic."""
     seq_path = Path(root) / ".solution-factory" / "sequence.json"
     if not seq_path.exists():
         return {"error": "sequence.json not found"}
@@ -87,6 +102,8 @@ def list_stories(status_filter=None, root="."):
 
     stories = []
     for epic in sequence.get("epics", []):
+        if epic_filter and epic["id"] != epic_filter:
+            continue
         for story in epic["stories"]:
             if status_filter and story["status"] != status_filter:
                 continue
@@ -105,13 +122,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Resolve next story from sequence")
     parser.add_argument("command", choices=["next", "list"])
     parser.add_argument("--status", help="Filter by status (for list)")
+    parser.add_argument("--epic", help="Scope to a single epic id (e.g. epic-03)")
     parser.add_argument("--root", default=".", help="Project root")
 
     args = parser.parse_args()
 
     if args.command == "next":
-        result = resolve_next(args.root)
+        result = resolve_next(args.root, epic_filter=args.epic)
     elif args.command == "list":
-        result = list_stories(args.status, args.root)
+        result = list_stories(args.status, args.root, epic_filter=args.epic)
 
     print(json.dumps(result, indent=2))

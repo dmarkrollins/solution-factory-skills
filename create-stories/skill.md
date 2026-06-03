@@ -82,40 +82,32 @@ Based on their answer + documentation + existing context:
 
 ## Step 4: Generate Stories
 
-### 4a. Draft Stories
+### 4a. Draft Stories with Plan Agent
 
-Break the epic into logical stories. Think:
+Use Agent tool with subagent_type=Plan, **model=sonnet** to generate the initial story draft. Provide:
+- Epic theme and objective (from Step 3)
+- Full ADR and constraint reference inventory (IDs + titles from Step 2)
+- Existing epic count and the next epic number
+- Complexity threshold (from config.json, default 3)
+- Scoring rubric: Change Surface (0–3), Implementation (0–3), Uncertainty (0–2, max), Scope (0–2, max) — sum must be ≤ threshold
+
+Prompt the agent to draft 5–15 vertically-sliced stories following these principles:
 - **Foundation first** — models, schemas, core setup
 - **Vertical slices** — thin working features end-to-end
 - **Progressive enhancement** — happy path → validation → error handling → edge cases
+- Score each story on all 4 dimensions; flag any that exceed threshold for splitting
+- List dependencies between stories (which stories must complete first)
+- Suggest which ADR/constraint IDs apply to each story
 
-Aim for 5-15 stories per epic.
+Review the agent's draft — challenge complexity scores, split any over-threshold stories, reorder dependencies as needed. Use this draft as input for steps 4b–4e rather than drafting from scratch.
 
 ### 4b. Score Complexity
 
-Apply the complexity rubric to each story:
-
-| Dimension | 0 | 1 | 2 | 3 |
-|-----------|---|---|---|---|
-| **Change Surface** | Single file | 2-3 files, same layer | Multiple layers | Full stack |
-| **Implementation** | Copy pattern | New file, familiar pattern | New patterns | New architecture |
-| **Uncertainty** | Crystal clear | Minor unknowns | — | Significant unknowns |
-| **Scope** | 1-2 criteria | 3-4 criteria | — | 5+ criteria |
-
-Note: Uncertainty and Scope max at 2, not 3.
-
-**Total = sum of all dimensions (0-10). Must be ≤ threshold (default 3).**
+Score each story on 4 dimensions (0–3 each): **Change Surface** (file → layer → stack), **Implementation** (copy → familiar → new pattern → new architecture), **Uncertainty** (clear=0, minor=1, significant=2; max 2), **Scope** (1-2 criteria=0, 3-4=1, 5+=2; max 2). Sum must be ≤ threshold (default 3).
 
 ### 4c. Split Over-Threshold Stories
 
-For any story exceeding threshold:
-
-- **High Scope** → split by acceptance criteria groupings
-- **High Implementation** → split by layers or phases
-- **High Uncertainty** → create spike/research story first
-- **High Change Surface** → split by system boundary
-
-Re-score after splitting. Repeat until all stories ≤ threshold.
+For any story exceeding threshold, split along the highest-scoring dimension. Re-score after splitting. Repeat until all stories ≤ threshold.
 
 ### 4d. Sequence with Dependencies
 
@@ -130,26 +122,7 @@ For each story, list ALL prerequisite story IDs.
 
 **MANDATORY when adding stories to an existing in-progress epic.**
 
-Before choosing where to insert, reason through:
-
-1. **Noise impact** — Will the new story's unresolved state produce compiler errors, test failures, or misleading output during other stories' quality gates? If yes, it should run **before** those stories.
-2. **Unblocking** — Does the new story fix something that other backlog stories depend on or assume is already working? If yes, insert before the earliest affected story.
-3. **Safety** — Is it purely additive with no side effects on existing backlog work? If yes, appending last is fine.
-
-Apply the rule:
-- **Noisy or unblocking** → find the earliest backlog story that would be affected, insert before it
-- **Neutral** → append after current backlog tail
-
-Read the backlog from `sequence.json` and explicitly state your insertion reasoning before writing files. Example:
-```
-Insertion analysis:
-  New story fixes: TypeScript compiler errors in auth/ and processors/
-  Affected backlog stories: all (tsc --noEmit runs on every story)
-  Earliest affected: 01.002 (next in sequence)
-  Decision: insert before 01.002
-```
-
-Use `--insert-before` when calling `generate_sequence.py add-story`:
+Before choosing where to insert, reason through noise impact (will unresolved state break other stories' quality gates?), unblocking (does this fix something other stories depend on?), and safety (is it purely additive?). State your insertion reasoning before writing files, then use `--insert-before` when calling `generate_sequence.py add-story`:
 ```bash
 python3 ~/.claude/skills/solution-factory/scripts/generate_sequence.py add-story \
   --epic epic-NN --story NN.NNN --insert-before NN.NNN
@@ -250,19 +223,7 @@ Ask: **"Review this epic. Approve, or request changes?"**
 
 ## Step 7: Collaborative Refinement
 
-If user requests changes, support:
-
-| Action | What Happens |
-|--------|-------------|
-| **Add story** | Draft, score, insert into sequence |
-| **Remove story** | Remove, update downstream deps |
-| **Split story** | Apply splitting strategy, re-score, re-sequence |
-| **Merge stories** | Combine, re-score, verify ≤ threshold |
-| **Adjust complexity** | Re-evaluate with rubric |
-| **Resequence** | Rearrange, update deps |
-| **Clarify** | Expand descriptions, acceptance criteria |
-
-After each change:
+If user requests changes (add, remove, split, merge, resequence, clarify), apply the change, then:
 - Update story YAML files
 - Update epic YAML
 - Update sequence.json
@@ -300,9 +261,8 @@ The new story gets the **next available ID** (not renumbered). Array position de
 
 # Token Efficiency
 
-**Three-tier model strategy:**
+**Model strategy:**
 - **Scripts** (zero tokens): Steps 1, 2, 5 (validate, inventory, scaffold, write files)
-- **Haiku subagents** (low tokens): Codebase exploration for epic context gathering
 - **Sonnet/Opus** (full tokens): Steps 3, 4, 7 (scope analysis, story generation, refinement)
 
 **Context compression:**

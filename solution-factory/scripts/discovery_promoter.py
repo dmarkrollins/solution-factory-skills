@@ -88,7 +88,10 @@ def promote_discoveries(discoveries, root="."):
 {disc['content']}
 
 ## Decision
-{disc['content']}
+<!-- Describe the decision made and the rationale here -->
+
+## Consequences
+<!-- Positive and negative consequences of this decision -->
 """
             file_path.write_text(content)
             promoted.append({
