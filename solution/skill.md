@@ -88,9 +88,9 @@ INTERACTIVE vs AUTONOMOUS
   Use it when stories are already well-formed from /create-stories.
 
   Both modes run the IDENTICAL Phases 1–5 quality gates (YAGNI filter, complexity
-  re-assessment, two-tier testing, code review, discovery tracking). `epic` only
-  converts the human gates into autonomous decisions; on a genuine blocker it
-  stops and asks rather than guessing.
+  re-assessment, two-tier testing, code review, security review, documentation
+  cleanup, discovery tracking). `epic` only converts the human gates into
+  autonomous decisions; on a genuine blocker it stops and asks rather than guessing.
 
   --review-merges gives you per-merge approval for a single run without changing
   config — the on-demand equivalent of automerge=false. Only the merge is gated;
@@ -479,8 +479,22 @@ Spawn `code-reviewer` agent (**model=sonnet**) with:
 - Instruction to run `git diff main..HEAD` itself to get the full diff
 
 Review verdict:
-- **APPROVED** or **APPROVED WITH NOTES** → proceed to 5b. Log any notes as discoveries in `local.md`.
+- **APPROVED** or **APPROVED WITH NOTES** → proceed to 5a.6. Log any notes as discoveries in `local.md`.
 - **NEEDS REWORK** → address all Critical and Important issues → re-run 5a (tests) → re-run 5a.5 (review) until APPROVED.
+
+### 5a.6. Security Review
+
+**MANDATORY — runs after code review passes, before demo scripts.**
+
+Spawn `security-engineer` agent (**model=sonnet**) with:
+- Instruction to run `git diff --name-only main..HEAD` and `git diff main..HEAD` itself
+- Story title and description
+
+The agent applies an internal fast-pass rule — if no attack surface is touched (no API routes, auth, data access, external I/O, or user-facing inputs), it returns "SECURITY: N/A" and the step is automatically satisfied.
+
+Security review verdict:
+- **APPROVED** or **APPROVED WITH NOTES** → proceed to 5b. Log any medium-severity notes as discoveries in `local.md`.
+- **NEEDS REWORK** → address all Critical and High findings → re-run 5a (tests) → re-run 5a.5 (code review) → re-run 5a.6 (security review) until APPROVED.
 
 ---
 
@@ -491,7 +505,7 @@ Check whether demo script generation is enabled:
 cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/config_loader.py . | python3 -c "import sys,json; c=json.load(sys.stdin); print(c['config']['stories'].get('generate_demo_scripts', False))"
 ```
 
-**If the output is `False` → skip this step entirely and proceed to 5c.**
+**If the output is `False` → skip this step entirely and proceed to 5b.5.**
 
 **If the output is `True` → generate all 3 scripts + runner:**
 
@@ -512,6 +526,20 @@ chmod +x .solution-factory/tests/[EPIC_ID]/**/run_all_demos.py
 Run demos to verify:
 ```bash
 python3 .solution-factory/tests/[EPIC_ID]/[STORY_ID]/run_all_demos.py
+```
+
+### 5b.5. Documentation Cleanup
+
+Spawn `documentation-writer` agent (**model=sonnet**) with:
+- Instruction to run `git diff --name-only main..HEAD` and `git diff main..HEAD` itself
+- Story title and description
+
+The agent scans existing project documentation for stale references to changed areas and updates them. If no existing docs reference the changed area, it returns "DOC: N/A" and no action is taken. Do not generate new documentation beyond what already exists unless an acceptance criterion explicitly requires it.
+
+After the agent completes, if any files were updated:
+```bash
+git add [updated doc files]
+git commit -m "Step docs: update documentation for story [STORY_ID]"
 ```
 
 ### 5c. Stop
@@ -697,10 +725,21 @@ another, with a single upfront confirmation. This is the "engine" mode: the user
 and Claude do the thinking up front (`/ideate` → `/create-stories`); `epic` then
 works the approved backlog with minimal human engagement.
 
-**Design in one sentence:** the main thread is a thin orchestrator that holds only
-a progress ledger; each story is implemented by a fresh **worker subagent** whose
-isolated context is discarded when the story finishes — that is how context is
-kept clean between stories.
+**Design in one sentence:** each story is *implemented* by a fresh **worker
+subagent** whose heavy context (exploration, diffs, test loops) is discarded when
+it returns a green branch; the **main-thread orchestrator** then runs the
+*independent* quality gauntlet (code review, security review, docs) and completion
+using the real specialized agents — so reviews keep their specialization AND get
+author≠reviewer independence, while the orchestrator's own context stays light
+(ledger + compact verdicts only).
+
+> **Why the split (harness nesting limit):** this harness caps agent nesting at
+> depth 1 — only the main thread can spawn agents; a spawned worker cannot spawn
+> its own. So the specialized review agents (`code-reviewer`, `security-engineer`,
+> `documentation-writer`) MUST run from the main-thread orchestrator, not from
+> inside the worker. The worker therefore owns implementation + testing only; the
+> orchestrator owns review + completion. This is what makes autonomous mode the
+> equivalent of interactive mode rather than a degraded inline-everything version.
 
 Parse the epic id from arguments (e.g. `epic-03`). If none is given, run
 `get_status.py` and ask the user which epic to run (one question).
@@ -764,19 +803,21 @@ Maintain a ledger in the main thread: `[{id, title, result, note}]`. Repeat:
    - `status: "active"` → a story is mid-flight (e.g. a prior interrupted run).
      Hand it to a worker in **resume** mode (see worker contract).
    - `status: "ready"` → hand it to a worker in **start** mode.
-3. **Spawn the worker subagent** (EPIC-4) and **wait** for its structured result.
-4. **Record & decide:**
-   - `DONE` → update `run.current_story` to the next story ID (or `null` if
-     none remain) in the epic JSON, append to ledger, **loop**.
-   - `MERGE_PENDING` (only possible when `--review-merges` is set) → present the
-     worker's merge preview and **wait for one yes/no** (EPIC-3a). On approval the
-     orchestrator performs the merge, updates `run.current_story`, marks the story
-     `DONE`, and **loops**. On rejection, treat as a stop: leave the branch
-     unmerged and go to EPIC-5.
-   - `BLOCKED` → update `run.current_story` to the blocked story ID in the epic
-     JSON, append to ledger, **stop the loop**, go to EPIC-5 and surface the
-     blocker with 2–3 options. Do NOT attempt further stories (later stories
-     typically depend on the blocked one).
+3. **Implement (EPIC-4):** spawn the worker subagent and **wait** for its
+   `IMPLEMENTED | BLOCKED` result.
+   - `BLOCKED` → record, update `run.current_story` to this story, **stop the
+     loop**, go to EPIC-5 and surface the blocker. Do NOT attempt further stories.
+   - `IMPLEMENTED` → proceed to step 4.
+4. **Quality gauntlet (EPIC-4b):** the orchestrator runs the independent
+   review/security/docs gauntlet against the worker's branch. If it forces rework
+   beyond the retry budget → treat as `BLOCKED` (step 3 blocked path).
+5. **Complete (EPIC-4c):** the orchestrator runs the `complete` logic
+   (discoveries, status, artifact commit, merge per `REVIEW_MERGES`). When
+   `--review-merges` is set, this is where the per-merge gate fires (EPIC-3a).
+6. **Record & decide:**
+   - Story merged & `done` → update `run.current_story` to the next story ID (or
+     `null`), append `DONE` to ledger, **loop**.
+   - Merge rejected at EPIC-3a → leave branch unmerged, record as held, go to EPIC-5.
 
    Update `run.current_story` after every story outcome:
    ```bash
@@ -791,9 +832,11 @@ worker's internal exploration, diffs, or test output:
 
 ### EPIC-3a: Merge review (only when `--review-merges` is set)
 
-The worker has already validated, tested, reviewed, processed discoveries,
-completed the story status, and committed `.solution-factory/` artifacts — it
-stopped only at the git merge. Present its preview verbatim:
+By this point the orchestrator has already run the worker (implementation +
+tests), the quality gauntlet (code review, security review, docs), and the
+`complete` logic through discovery promotion, status update, and the
+`.solution-factory/` artifact commit — everything except the git merge. Present
+the preview:
 ```
 Merge review — [ID] [Title]
   Branch:  feature/[ID]-[slug] → main
@@ -813,76 +856,109 @@ Merge to main? (yes / no)
 - **no** → leave the branch unmerged for the user, record the story as held, and
   go to EPIC-5. Do not start the next story.
 
-## EPIC-4: Worker subagent contract
+## EPIC-4: Worker subagent contract (implementation + testing only)
 
-Spawn **one worker per story** using the Agent tool with the **general-purpose**
-agent (it has the full tool set: Read/Edit/Write/Bash/Grep/Glob), **model=sonnet**.
-The worker runs the complete single-story workflow **inline in its own context**.
+Spawn **one worker per story** using the Agent tool with the **story-worker**
+agent (**model=sonnet**). The worker runs **Phases 1–4 + 5a (testing)** inline in
+its own disposable context and STOPS at a green, merge-ready branch — it does NOT
+review, complete, or merge. Its autonomous overrides (plan auto-approval, no-human
+interview resolution, inline implementation/testing) are pre-baked in its agent
+definition.
 
 Pass the worker this prompt (fill in the brackets):
 
-> You are implementing ONE story autonomously as part of an epic run. Project
-> root: `[ROOT]`. Story: `[ID]` in epic `[EPIC_ID]`. Mode: `[start|resume]`.
+> You are implementing ONE story autonomously as part of an epic run.
+> Project root: `[ROOT]`. Story: `[ID]` in epic `[EPIC_ID]`. Mode: `[start|resume]`.
 >
-> Execute the `/solution` skill's **Phases 1–5 then the `complete` command**
-> exactly as written in `~/.claude/skills/solution/skill.md`, with these
-> **autonomous overrides** — everything else (YAGNI pre-filter, complexity
-> re-assessment, two-tier testing, code review, discovery tracking, incremental
-> commits, config-driven demo scripts and automerge) is UNCHANGED and MANDATORY:
+> Execute the `/solution` skill's **Phases 1 through 5a (Two-Tier Testing)** exactly
+> as written in `~/.claude/skills/solution/skill.md`, then STOP. Do NOT run code
+> review, security review, demo scripts, docs cleanup, or `complete`, and do NOT
+> merge — the orchestrator does those. Your autonomous override rules are in your
+> agent definition. Do not wait for human input at any gate.
 >
-> 1. **Plan approval (3f):** auto-approve. Still write `plan.md` in full. Do not
->    print the approval block or wait for a human.
-> 2. **Requirements interview (3d):** there is no human. Resolve every ambiguity
->    from codebase exploration and the story's acceptance criteria. If a genuine
->    blocker remains (contradictory criteria, behavior you cannot determine, a
->    missing prerequisite) — do NOT guess. Document it in `local.md` and return
->    `BLOCKED`.
-> 3. **Complexity > 3 after YAGNI (3c):** do not split autonomously. Document and
->    return `BLOCKED`.
-> 4. **Tests fail / code review NEEDS REWORK (5a, 5a.5):** rework inline and
->    re-run until clean — these loops are already autonomous. If you cannot reach
->    green after reasonable effort, document and return `BLOCKED`.
-> 5. **You do work INLINE** — do not spawn further subagents. Do the exploration,
->    implementation, testing, and code-review pass yourself, applying the same
->    rigor the named agents would. (The skill normally delegates these to keep
->    the parent context lean; your context is already isolated and disposable, so
->    inline is correct here.)
-> 6. **Discovery promotion (complete step 4):** auto-apply items at/above the
->    `auto_create` relevance threshold and discard those at/below `auto_discard`
->    (per config). For "prompt-band" items in between, do NOT block — list them in
->    your return payload under `deferred_discoveries` for end-of-run review.
-> 7. **Merge:** `REVIEW_MERGES = [true|false]` for this run.
->    - If `false` → merge automatically, ignoring the `automerge` config (the user
->      opted into autonomy by entering epic mode). Use the `complete` command's
->      merge commands.
->    - If `true` → run `complete` through ALL its steps EXCEPT the final merge
->      (step 9) and the epic-complete check (step 12). Specifically: complete
->      story status, commit `.solution-factory/` artifacts, leave the feature
->      branch merge-ready, and **do NOT** check out `main` or merge. Return
->      `MERGE_PENDING` with a merge preview — the orchestrator performs the merge
->      after the user approves.
->
-> Run `complete` for the story when Phases 1–5 pass. Then **return ONLY** a
-> compact structured payload — no narration:
+> Return ONLY a compact structured payload — no narration:
 > ```
-> RESULT: DONE | MERGE_PENDING | BLOCKED
+> RESULT: IMPLEMENTED | BLOCKED
 > STORY: [ID] — [title]
 > SUMMARY: <=2 sentences on what shipped (or why blocked)
-> COMMITS: <count> on feature/[ID]-[slug], merged=<yes|no>
-> DIFFSTAT: <git diff --stat main..HEAD>   # required when MERGE_PENDING
-> DEFERRED_DISCOVERIES: [ {note, relevance} ... ]   # may be empty
+> BRANCH: feature/[ID]-[slug]
+> COMMITS: <count> on the feature branch
+> DIFFSTAT: <git diff --stat main..HEAD>
+> TESTS: tier1=<pass|fail> tier2=<pass|fail>
+> DISCOVERIES: <count logged to local.md>
 > BLOCKER: <text>   # only if BLOCKED — what's needed from a human
 > ```
 
-After the worker returns, the orchestrator does a **cheap sanity check** before
-trusting `DONE` or `MERGE_PENDING` (keeps the engine honest without re-reading the
-work). Both paths run `complete` through the status update, so the story must be
-`done` in sequence.json either way:
+After the worker returns `IMPLEMENTED`, do a **cheap sanity check** before
+trusting it: confirm the feature branch exists with commits and a clean tree.
+```bash
+cd $(git rev-parse --show-toplevel) && git rev-parse --verify feature/[ID]-[slug] >/dev/null 2>&1 && git log --oneline main..feature/[ID]-[slug] | head && git status --porcelain
+```
+If the branch is missing, has no commits, or the worker reported `IMPLEMENTED` but
+tests as `fail`, treat it as `BLOCKED` (note: "worker reported success but branch
+not ready") and stop the loop.
+
+## EPIC-4b: Quality gauntlet (orchestrator-run, independent agents)
+
+The branch is green but **unreviewed**. The orchestrator now runs the independent
+review passes from the main thread — these are the specialized agents the worker
+cannot spawn itself. Run them against `git diff main..feature/[ID]-[slug]` exactly
+as Phases **5a (independent test review — risk-tiered, below)**, **5a.5 (code
+review)**, **5a.6 (security review)**, **5b (demo scripts, config-gated)**, and
+**5b.5 (documentation cleanup)** specify. Check out the feature branch first so the
+agents see the changes:
+```bash
+cd $(git rev-parse --show-toplevel) && git checkout feature/[ID]-[slug]
+```
+
+- **Independent test review (risk-tiered, optional).** The worker already wrote and
+  ran tier-1 + tier-2 tests, and EPIC-4c re-runs the full suite as a backstop — so
+  for routine stories that is enough. Spawn `test-engineer` (**model=sonnet**) here
+  for an *independent* coverage/quality judgment **only when the story is high-risk**,
+  i.e. EITHER condition holds:
+  - post-YAGNI complexity (from `plan.md`) is **at or above** the configured
+    complexity threshold (the top bucket of allowed stories), OR
+  - the diff touches a **critical surface** — auth, data access/migrations,
+    payments/money, or external I/O.
+
+  When spawned, `test-engineer` runs Phase 5a as written and additionally judges
+  whether coverage is adequate for the acceptance criteria. For routine stories
+  below both triggers, **skip it** — do not spawn (keeps trivial stories cheap).
+- Spawn `code-reviewer` (5a.5), then `security-engineer` (5a.6) — both **model=sonnet**.
+- **If any of the spawned reviewers returns NEEDS REWORK** (test-engineer included,
+  when run) → re-spawn the **story-worker in `rework` mode** on the same branch,
+  passing the Critical/Important/High findings verbatim. The worker fixes, re-runs
+  tests, and returns `IMPLEMENTED`. Then re-run the gauntlet. **Retry budget: 3
+  rework cycles.** If still not clean after 3 → treat as `BLOCKED` (note: "gauntlet
+  could not reach clean after 3 rework cycles") and stop the loop.
+- Once code review AND security review are clean → run 5b (if enabled) and 5b.5.
+
+This gives reviews their specialization **and** author≠reviewer independence — the
+reviewer never sees the worker's reasoning, only the committed diff.
+
+## EPIC-4c: Completion (orchestrator-run)
+
+With the branch green and reviewed, the orchestrator runs the **`complete`
+command** logic from the main thread (the worker did NOT do this):
+
+- Steps 1–3: validate completion + `check_plan_complete` + full-suite re-run (the
+  independent test backstop).
+- Step 4: read `local.md` and **auto-promote** discoveries at/above the
+  `auto_create` relevance threshold; **discard** those at/below `auto_discard`;
+  collect in-between items into the run's deferred list for EPIC-5.
+- Steps 5–8, 11–12: regenerate capsules if needed, flip story status to `done`,
+  commit `.solution-factory/` artifacts, run the epic-complete check.
+- **Step 9 (merge) — honor `REVIEW_MERGES`:**
+  - `false` → merge automatically (the `complete` step 9 commands).
+  - `true` → STOP before merge and present the preview at **EPIC-3a**; merge only
+    on approval.
+
+After completion, sanity-check the story is actually `done` before looping:
 ```bash
 cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/story_resolver.py list --epic [EPIC_ID] --status done | python3 -c "import sys,json; print([s['id'] for s in json.load(sys.stdin)['stories']])"
 ```
-If the worker reported `DONE`/`MERGE_PENDING` but the story is not `done`, treat it
-as `BLOCKED` (note: "worker reported success but status not updated") and stop.
+If the story is not `done`, treat as `BLOCKED` (note: "completion did not update
+status") and stop.
 
 ## EPIC-5: Final summary
 
@@ -906,8 +982,9 @@ Autonomous run complete — [EPIC_ID]
 Done: [X]/[N]   Blocked: [Y]   Remaining backlog: [Z]
 ```
 
-**Deferred discoveries** (collected from all workers): present each one at a time,
-ask yes/no, and for confirmed items run:
+**Deferred discoveries** (collected by the orchestrator during each story's
+EPIC-4c completion): present each one at a time, ask yes/no, and for confirmed
+items run:
 ```bash
 cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/discovery_promoter.py confirm --discoveries '[...]'
 ```
@@ -920,17 +997,21 @@ cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory
 the open question and re-run `/solution epic [EPIC_ID]`; split the story via
 `/create-stories`; or implement it interactively with `/solution start [ID]`).
 
-**If the epic is fully done**, the last worker's `complete` already flipped the
-epic to `completed` (complete step 12). Confirm and suggest `/create-stories` for
-the next epic.
+**If the epic is fully done**, the last story's EPIC-4c completion already flipped
+the epic to `completed` (complete step 12). Confirm and suggest `/create-stories`
+for the next epic.
 
 ## Epic-runner rules
 
 - **Sequential only** — never run stories in parallel (dependencies + shared git
   history). One worker at a time.
 - **Stop on first blocker** — predictable over "maximize throughput."
-- **Thin orchestrator** — the main thread holds the ledger and compact status
-  lines only; all heavy work lives in (and dies with) each worker's context.
+- **Split of duties** — the worker owns implementation + testing (its heavy
+  exploration/diff context dies with it); the orchestrator owns the independent
+  review/security/docs gauntlet and completion, holding only the ledger and
+  compact verdicts. This is forced by the depth-1 nesting limit and is what keeps
+  reviews specialized + independent rather than self-reviewed inline.
 - **No new gates, no changed processing rules** — `epic` reuses Phases 1–5 and
-  `complete` verbatim; it only swaps human gates for the overrides above.
+  `complete` verbatim; it only relocates the review/completion phases to the
+  orchestrator and swaps human gates for the overrides above.
 

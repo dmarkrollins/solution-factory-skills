@@ -21,7 +21,8 @@ DEFAULTS = {
     "stories": {
         "require_tests": True,
         "generate_demo_scripts": False,
-        "automerge": True
+        "automerge": True,
+        "max_stories_per_epic": 10
     },
     "ux": {
         "wireframe_path": None,

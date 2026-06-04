@@ -11,13 +11,16 @@ from pathlib import Path
 
 
 def load_config(root="."):
-    """Load complexity threshold from config."""
+    """Load complexity threshold and per-epic story cap from config."""
+    threshold = 3
+    max_stories_per_epic = 10
     config_path = Path(root) / ".solution-factory" / "config.json"
     if config_path.exists():
         with open(config_path, "r") as f:
             cfg = json.load(f) or {}
-        return cfg.get("complexity", {}).get("threshold", 3)
-    return 3
+        threshold = cfg.get("complexity", {}).get("threshold", 3)
+        max_stories_per_epic = cfg.get("stories", {}).get("max_stories_per_epic", 10)
+    return threshold, max_stories_per_epic
 
 
 def validate(epic_id=None, root="."):
@@ -29,7 +32,7 @@ def validate(epic_id=None, root="."):
     with open(seq_path, "r") as f:
         sequence = json.load(f)
 
-    threshold = load_config(root)
+    threshold, max_stories_per_epic = load_config(root)
     errors = []
     warnings = []
     seen_ids = set()
@@ -42,6 +45,14 @@ def validate(epic_id=None, root="."):
 
     for epic in epics:
         story_ids_in_order = []
+
+        # Per-epic story cap — forces large epics to be split into sequential epics
+        story_count = len(epic.get("stories", []))
+        if story_count > max_stories_per_epic:
+            errors.append(
+                f"Epic {epic['id']} has {story_count} stories, exceeds "
+                f"max_stories_per_epic {max_stories_per_epic} — split into sequential epics"
+            )
 
         for story in epic["stories"]:
             sid = story["id"]
@@ -126,7 +137,8 @@ def validate(epic_id=None, root="."):
         "errors": errors,
         "warnings": warnings,
         "stories_checked": len(seen_ids),
-        "complexity_threshold": threshold
+        "complexity_threshold": threshold,
+        "max_stories_per_epic": max_stories_per_epic
     }
 
 

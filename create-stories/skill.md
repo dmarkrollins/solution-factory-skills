@@ -12,9 +12,12 @@ Break down a brainstormed epic into sequenced stories stored as JSON files in `.
 
 **Key principles:**
 - Stories MUST have complexity ≤ threshold from `config.json` (default: 3)
+- Each epic MUST have ≤ `stories.max_stories_per_epic` from `config.json` (default: 10) — larger scope splits into sequential epics, never one oversized epic
 - Vertical slicing — not horizontal layers
 - Story execution order = array position in `sequence.json`, NOT numerical sort
 - Story IDs are numeric only (never letter suffixes)
+
+> **Why the per-epic cap:** epics run autonomously via `/solution epic`, where the main-thread orchestrator accumulates a small ledger entry per story. Capping the count keeps that growth bounded, keeps the blocker blast-radius small (the run stops on the first blocker), and keeps the EPIC-2 confirmation manifest reviewable.
 
 ---
 
@@ -27,7 +30,7 @@ python3 ~/.claude/skills/solution-factory/scripts/config_loader.py
 ```
 
 - If `.solution-factory/` doesn't exist → tell user to run `/ideate` first, STOP
-- Extract complexity threshold from config
+- Extract complexity threshold AND `stories.max_stories_per_epic` (default 10) from config
 
 Check that decisions and/or constraints exist:
 ```bash
@@ -91,7 +94,7 @@ Use Agent tool with subagent_type=Plan, **model=sonnet** to generate the initial
 - Complexity threshold (from config.json, default 3)
 - Scoring rubric: Change Surface (0–3), Implementation (0–3), Uncertainty (0–2, max), Scope (0–2, max) — sum must be ≤ threshold
 
-Prompt the agent to draft 5–15 vertically-sliced stories following these principles:
+Prompt the agent to draft vertically-sliced stories — **no more than `max_stories_per_epic` (default 10) per epic** — following these principles:
 - **Foundation first** — models, schemas, core setup
 - **Vertical slices** — thin working features end-to-end
 - **Progressive enhancement** — happy path → validation → error handling → edge cases
@@ -100,6 +103,18 @@ Prompt the agent to draft 5–15 vertically-sliced stories following these princ
 - Suggest which ADR/constraint IDs apply to each story
 
 Review the agent's draft — challenge complexity scores, split any over-threshold stories, reorder dependencies as needed. Use this draft as input for steps 4b–4e rather than drafting from scratch.
+
+### 4a.5. Enforce the Per-Epic Cap (split into sequential epics)
+
+**MANDATORY — runs after drafting, before scoring.**
+
+If the draft (or, in `insertion_mode`, the existing epic plus the new stories) exceeds `max_stories_per_epic`, do NOT shrink scope by dropping work. Instead **split the work across sequential epics**:
+
+1. Group the stories along the natural dependency seam — foundational/earlier slices in `epic-NN`, later enhancements in `epic-NN+1` (and so on), each ≤ the cap.
+2. Cross-epic dependencies are fine: a story in `epic-NN+1` may depend on a story in `epic-NN` (dependencies are global story IDs; epics run sequentially).
+3. Scaffold and write each epic separately in Step 5, and surface the split in the Step 6 summary so the user sees it.
+
+State the split reasoning (which seam, which stories land in which epic, and why) before writing any files. The goal is the same total scope delivered as two right-sized epics, never one oversized one.
 
 ### 4b. Score Complexity
 
