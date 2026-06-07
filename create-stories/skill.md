@@ -13,7 +13,7 @@ Break down a brainstormed epic into sequenced stories stored as JSON files in `.
 **Key principles:**
 - Stories MUST have complexity ≤ threshold from `config.json` (default: 3)
 - Each epic MUST have ≤ `stories.max_stories_per_epic` from `config.json` (default: 10) — larger scope splits into sequential epics, never one oversized epic
-- Vertical slicing — not horizontal layers
+- Vertical slicing — not horizontal layers. This includes the **"build it, then test it" pairing**: never draft a standalone "write/verify tests for `<feature X>`" story for a feature whose tests a dependency story is already obligated to ship (see `stories.require_tests` in `config.json` and the cross-story duplication pre-filter in step 4a.6). Tests for a feature's own behaviors belong inside that feature's story — a downstream twin restates the same AC and is structurally redundant, not added coverage (see adr-014).
 - Story execution order = array position in `sequence.json`, NOT numerical sort
 - Story IDs are numeric only (never letter suffixes)
 
@@ -97,6 +97,7 @@ Use Agent tool with subagent_type=Plan, **model=sonnet** to generate the initial
 Prompt the agent to draft vertically-sliced stories — **no more than `max_stories_per_epic` (default 10) per epic** — following these principles:
 - **Foundation first** — models, schemas, core setup
 - **Vertical slices** — thin working features end-to-end
+- **Tests travel with their feature** — never draft a separate downstream "test `<feature>`" story; the feature's own AC (and its `require_tests` obligation) already cover its behaviors. A dedicated test story is only legitimate when it targets a genuine gap the feature story's AC doesn't name (e.g. integration wiring across components, regression suites, edge cases nobody specified) — and its AC must be phrased against that gap, not as a restatement of the feature story's AC.
 - **Progressive enhancement** — happy path → validation → error handling → edge cases
 - Score each story on all 4 dimensions; flag any that exceed threshold for splitting
 - List dependencies between stories (which stories must complete first)
@@ -115,6 +116,21 @@ If the draft (or, in `insertion_mode`, the existing epic plus the new stories) e
 3. Scaffold and write each epic separately in Step 5, and surface the split in the Step 6 summary so the user sees it.
 
 State the split reasoning (which seam, which stories land in which epic, and why) before writing any files. The goal is the same total scope delivered as two right-sized epics, never one oversized one.
+
+### 4a.6. Cross-Story Duplication Pre-Filter
+
+**MANDATORY — runs after drafting (and any epic-cap split), before complexity scoring.**
+
+For every draft story that has at least one dependency, diff its draft acceptance criteria against the **full acceptance-criteria list** of each story it depends on — read the actual AC text, not just the dependency's title or goal. Look specifically for the **"build it, then test it" anti-pattern**: a later story whose AC are restatements of an earlier story's AC, just reframed as "Test: `<earlier AC>`" or "Verify `<earlier behavior>`".
+
+This matters most when `stories.require_tests: true` (check `config.json`) — under that config every implementation story is *already* obligated to ship with tests proving its own acceptance criteria. A standalone "write/verify tests for `<behavior X>`" story, where `X` is the literal AC of a dependency, is then **structurally redundant by construction, not by accident** — the dependency's own implementation will already deliver that exact coverage. (See `adr-014`, which documents this exact failure mode from epic-04: story 04.007 restated story 04.005's AC nearly verbatim as "Test: ...", and the implementing worker found 04.005 had already shipped all 9 scenarios under a different filename.)
+
+For each suspected duplicate pair, classify and act:
+- **>~50% of the later story's AC are restatements of the dependency's AC** → merge the later story into the dependency (fold its AC into the dependency's acceptance list / testing strategy) or drop it from the draft entirely. Do not carry it forward as a separate backlog story.
+- **Some AC restate, some target genuinely distinct behavior** (integration wiring across components, edge cases the original AC never named, regression/visual suites) → discard the restated AC and keep only the distinct ones, rewritten so each is phrased against the **gap** — what the dependency's AC does *not* already cover — never as an echo of what it does.
+- **No overlap found** → no action; move on.
+
+State your duplication analysis (which dependency pairs were checked, what overlap was found, what was merged / rewritten / dropped / kept as-is) before proceeding to scoring. This is the cross-story analogue of `/solution`'s per-story YAGNI pre-filter (3b.5) — same rigor, one level up: across the draft set instead of within a single story.
 
 ### 4b. Score Complexity
 
@@ -271,6 +287,7 @@ The new story gets the **next available ID** (not renumbered). Array position de
 | Validation fails | Show errors, fix, re-validate |
 | Duplicate story ID | Error from script, assign different ID |
 | Dependency cycle | Error from validation, fix deps |
+| Draft story's AC restate a dependency's AC (the "test it twin" pattern) | Apply 4a.6 — merge into the dependency or rewrite to target the uncovered gap; never carry forward as a separate story |
 
 ---
 

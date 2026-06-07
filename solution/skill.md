@@ -202,7 +202,19 @@ Verify the requested story is ready (deps met). If not, show blocking dependenci
 
 ```bash
 python3 ~/.claude/skills/solution-factory/scripts/story_activator.py --story [ID] --epic [EPIC_ID]
-python3 ~/.claude/skills/solution-factory/scripts/generate_sequence.py update-status --story [ID] --status active
+```
+
+This single call moves the story folder to `active/` **and** syncs its
+`sequence.json` status in the same operation — there is no separate
+status-update step, so the folder location and the recorded status can never
+drift apart (not even across an interruption mid-activation; re-running it
+self-heals any prior drift).
+
+Commit this immediately, before planning begins, so it never sits uncommitted
+waiting to be swept into a later, unrelated commit:
+```bash
+git add .solution-factory/
+git commit -m "Activate story [ID]: [title]"
 ```
 
 Load story context:
@@ -591,7 +603,21 @@ Tell user: **"Run `/solution complete [ID]` when ready."**
 
    Read `local.md` from the active story folder. For each discovery:
    - Assess relevance score (1-10) based on how broadly applicable it is
-   - Prepare JSON array of scored discoveries
+   - Prepare JSON array of scored discoveries using **exactly these field names** (the script raises `KeyError` otherwise):
+
+   ```json
+   [
+     {
+       "title": "Short descriptive title",
+       "content": "Full explanation of the discovery",
+       "type": "decision | constraint",
+       "relevance": 8,
+       "source_story": "04.001"
+     }
+   ]
+   ```
+
+   > **Field names are strict:** use `content` (not `body`/`description`), and always include `source_story`.
 
    ```bash
    python3 ~/.claude/skills/solution-factory/scripts/discovery_promoter.py auto \
@@ -613,8 +639,10 @@ Tell user: **"Run `/solution complete [ID]` when ready."**
 6. **Complete the story:**
    ```bash
    python3 ~/.claude/skills/solution-factory/scripts/story_completer.py complete --story [ID] --epic [EPIC_ID]
-   python3 ~/.claude/skills/solution-factory/scripts/generate_sequence.py update-status --story [ID] --status done
    ```
+   This single call moves the story folder to `done/` **and** syncs its
+   `sequence.json` status (plus `completed` timestamp) in the same operation —
+   no separate status-update step, so folder location and status can't drift.
 
 8. **Commit .solution-factory/ artifacts:**
    ```bash
@@ -665,8 +693,11 @@ Tell user: **"Run `/solution complete [ID]` when ready."**
 
 ```bash
 python3 ~/.claude/skills/solution-factory/scripts/story_completer.py rollback --story [ID] --epic [EPIC_ID]
-python3 ~/.claude/skills/solution-factory/scripts/generate_sequence.py update-status --story [ID] --status active
 ```
+
+This single call moves the story folder back to `active/` **and** syncs its
+`sequence.json` status in the same operation — no separate status-update step,
+so folder location and status can't drift.
 
 Inform user the story is reopened and active.
 
@@ -945,7 +976,9 @@ command** logic from the main thread (the worker did NOT do this):
   independent test backstop).
 - Step 4: read `local.md` and **auto-promote** discoveries at/above the
   `auto_create` relevance threshold; **discard** those at/below `auto_discard`;
-  collect in-between items into the run's deferred list for EPIC-5.
+  collect in-between items into the run's deferred list for EPIC-5. Use the
+  same strict JSON schema as the `complete` command step 4 (`content` field,
+  not `body`; `source_story` required) — see that section for the exact shape.
 - Steps 5–8, 11–12: regenerate capsules if needed, flip story status to `done`,
   commit `.solution-factory/` artifacts, run the epic-complete check.
 - **Step 9 (merge) — honor `REVIEW_MERGES`:**
@@ -984,7 +1017,8 @@ Done: [X]/[N]   Blocked: [Y]   Remaining backlog: [Z]
 
 **Deferred discoveries** (collected by the orchestrator during each story's
 EPIC-4c completion): present each one at a time, ask yes/no, and for confirmed
-items run:
+items run (same strict JSON schema as the `complete` command step 4 — `content`
+field, not `body`; `source_story` required):
 ```bash
 cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/discovery_promoter.py confirm --discoveries '[...]'
 ```

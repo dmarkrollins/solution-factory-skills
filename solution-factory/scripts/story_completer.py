@@ -47,7 +47,9 @@ def validate_completion(story_id, epic_id, root="."):
 
 
 def complete_story(story_id, epic_id, root="."):
-    """Move story from active to done."""
+    """Move story from active to done, syncing its sequence.json status (and
+    `completed` timestamp) in the same call -- mirrors story_activator's fix
+    so the active->done transition can't drift between folder and status."""
     base = Path(root) / ".solution-factory" / "epics" / epic_id / "stories"
     active_dir = base / "active" / story_id
     done_dir = base / "done" / story_id
@@ -59,12 +61,18 @@ def complete_story(story_id, epic_id, root="."):
     done_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(active_dir), str(done_dir))
 
+    # Sync sequence.json status (and completed timestamp) in the same call
+    sys.path.insert(0, str(Path(__file__).parent))
+    from generate_sequence import update_status
+    from story_templates import update_epic_yaml
+
+    seq_result = update_status(story_id, "done", root=root)
+    if "error" in seq_result:
+        return {"error": f"Story {story_id} folder moved to done but sequence.json sync failed: {seq_result['error']}", "done_path": str(done_dir)}
+
     # Update epic JSON
     epic_json_path = Path(root) / ".solution-factory" / "epics" / epic_id / f"{epic_id}.json"
     if epic_json_path.exists():
-        # Import and call update
-        sys.path.insert(0, str(Path(__file__).parent))
-        from story_templates import update_epic_yaml
         update_epic_yaml(str(epic_json_path), root)
 
     return {
@@ -76,7 +84,9 @@ def complete_story(story_id, epic_id, root="."):
 
 
 def rollback_story(story_id, epic_id, root="."):
-    """Move story from done back to active (reopen)."""
+    """Move story from done back to active (reopen), syncing its sequence.json
+    status in the same call -- mirrors story_activator's fix so the
+    done->active transition can't drift between folder and status."""
     base = Path(root) / ".solution-factory" / "epics" / epic_id / "stories"
     done_dir = base / "done" / story_id
     active_dir = base / "active" / story_id
@@ -87,11 +97,18 @@ def rollback_story(story_id, epic_id, root="."):
     active_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(done_dir), str(active_dir))
 
+    # Sync sequence.json status in the same call
+    sys.path.insert(0, str(Path(__file__).parent))
+    from generate_sequence import update_status
+    from story_templates import update_epic_yaml
+
+    seq_result = update_status(story_id, "active", root=root)
+    if "error" in seq_result:
+        return {"error": f"Story {story_id} folder moved to active but sequence.json sync failed: {seq_result['error']}", "active_path": str(active_dir)}
+
     # Update epic JSON
     epic_json_path = Path(root) / ".solution-factory" / "epics" / epic_id / f"{epic_id}.json"
     if epic_json_path.exists():
-        sys.path.insert(0, str(Path(__file__).parent))
-        from story_templates import update_epic_yaml
         update_epic_yaml(str(epic_json_path), root)
 
     return {

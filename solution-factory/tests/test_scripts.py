@@ -699,7 +699,10 @@ class TestValidateStories:
 
 class TestStoryActivator:
     def test_activate_story(self, proj):
+        gs = _modules["generate_sequence"]
         scaffold = _modules["scaffold_structure"]
+        gs.add_epic("epic-01", root=str(proj))
+        gs.add_story("epic-01", "01.001", root=str(proj))
         scaffold.create_epic(1, root=str(proj))
         write_story_yaml(proj, "epic-01", "01.001", "backlog")
 
@@ -720,7 +723,11 @@ class TestStoryActivator:
         assert (active_dir / "summary.md").exists()
 
     def test_activate_already_active_is_idempotent(self, proj):
+        gs = _modules["generate_sequence"]
         scaffold = _modules["scaffold_structure"]
+        gs.add_epic("epic-01", root=str(proj))
+        gs.add_story("epic-01", "01.001", root=str(proj))
+        gs.update_status("01.001", "active", root=str(proj))
         scaffold.create_epic(1, root=str(proj))
         write_story_yaml(proj, "epic-01", "01.001", "active")
 
@@ -738,7 +745,10 @@ class TestStoryActivator:
         assert "error" in result
 
     def test_activate_creates_local_md_with_story_id(self, proj):
+        gs = _modules["generate_sequence"]
         scaffold = _modules["scaffold_structure"]
+        gs.add_epic("epic-01", root=str(proj))
+        gs.add_story("epic-01", "01.001", root=str(proj))
         scaffold.create_epic(1, root=str(proj))
         write_story_yaml(proj, "epic-01", "01.001", "backlog")
 
@@ -757,6 +767,47 @@ class TestStoryActivator:
         content = local_md.read_text()
         assert "01.001" in content
 
+    def test_activate_story_syncs_sequence_status(self, proj):
+        """Activation must flip sequence.json's status in the SAME call that
+        moves the folder -- never a separate step an orchestrator can skip or
+        get interrupted between."""
+        gs = _modules["generate_sequence"]
+        scaffold = _modules["scaffold_structure"]
+        gs.add_epic("epic-01", root=str(proj))
+        gs.add_story("epic-01", "01.001", root=str(proj))
+        scaffold.create_epic(1, root=str(proj))
+        write_story_yaml(proj, "epic-01", "01.001", "backlog")
+
+        sa = _modules["story_activator"]
+        result = sa.activate_story("01.001", "epic-01", root=str(proj))
+        assert result["success"] is True
+
+        story = read_seq(proj)["epics"][0]["stories"][0]
+        assert story["status"] == "active"
+
+    def test_activate_self_heals_stale_sequence_status(self, proj):
+        """Simulates an interrupted prior activation: the folder was already
+        moved to active/ but sequence.json was never flipped (still backlog).
+        Re-running activate_story must repair sequence.json -- not just report
+        'already active' and leave the drift in place."""
+        gs = _modules["generate_sequence"]
+        scaffold = _modules["scaffold_structure"]
+        gs.add_epic("epic-01", root=str(proj))
+        gs.add_story("epic-01", "01.001", root=str(proj))
+        scaffold.create_epic(1, root=str(proj))
+        # Folder physically already in active/...
+        write_story_yaml(proj, "epic-01", "01.001", "active")
+        # ...but sequence.json was never updated past its seeded "backlog"
+        assert read_seq(proj)["epics"][0]["stories"][0]["status"] == "backlog"
+
+        sa = _modules["story_activator"]
+        result = sa.activate_story("01.001", "epic-01", root=str(proj))
+        assert result["success"] is True
+        assert result.get("already_active") is True
+
+        story = read_seq(proj)["epics"][0]["stories"][0]
+        assert story["status"] == "active"
+
 
 # ---------------------------------------------------------------------------
 # 8. story_completer
@@ -766,8 +817,16 @@ class TestStoryActivator:
 class TestStoryCompleter:
     def _make_active_story(self, proj, story_id="01.001", epic_id="epic-01"):
         scaffold = _modules["scaffold_structure"]
+        gs = _modules["generate_sequence"]
         scaffold.create_epic(1, root=str(proj))
         write_story_yaml(proj, epic_id, story_id, "active")
+        # Seed sequence.json too -- in real usage every story is registered
+        # there (via /create-stories) before it can ever be activated, and
+        # complete_story/rollback_story now require the entry to exist so
+        # they can sync its status atomically with the folder move.
+        gs.add_epic(epic_id, root=str(proj))
+        gs.add_story(epic_id, story_id, root=str(proj))
+        gs.update_status(story_id, "active", root=str(proj))
         active_dir = (
             proj / ".solution-factory" / "epics" / epic_id / "stories" / "active" / story_id
         )
@@ -838,6 +897,40 @@ class TestStoryCompleter:
         sc = _modules["story_completer"]
         result = sc.rollback_story("01.999", "epic-01", root=str(proj))
         assert "error" in result
+
+    def test_complete_story_syncs_sequence_status(self, proj):
+        """Completion must flip sequence.json's status (and stamp `completed`)
+        in the SAME call that moves the folder to done/ -- mirrors the
+        activation fix so the active->done transition can't drift either."""
+        self._make_active_story(proj)
+
+        sc = _modules["story_completer"]
+        result = sc.complete_story("01.001", "epic-01", root=str(proj))
+        assert result["success"] is True
+
+        story = read_seq(proj)["epics"][0]["stories"][0]
+        assert story["status"] == "done"
+        assert story["completed"] is not None
+
+    def test_rollback_story_syncs_sequence_status(self, proj):
+        """Rollback must flip sequence.json's status back to active in the
+        SAME call that moves the folder back from done/ -- mirrors the
+        activation fix so the done->active transition can't drift either."""
+        gs = _modules["generate_sequence"]
+        self._make_active_story(proj)
+
+        sc = _modules["story_completer"]
+        sc.complete_story("01.001", "epic-01", root=str(proj))
+        # Force sequence.json to "done" regardless of whether complete_story
+        # itself synced it -- isolates rollback's own sync behaviour so this
+        # test can't pass vacuously off an unrelated fix.
+        gs.update_status("01.001", "done", root=str(proj))
+
+        result = sc.rollback_story("01.001", "epic-01", root=str(proj))
+        assert result["success"] is True
+
+        story = read_seq(proj)["epics"][0]["stories"][0]
+        assert story["status"] == "active"
 
 
 # ---------------------------------------------------------------------------
