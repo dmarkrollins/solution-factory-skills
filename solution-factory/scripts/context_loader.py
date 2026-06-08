@@ -45,8 +45,7 @@ def load_context(story_id, epic_id, root="."):
         "epic_id": epic_id,
         "decisions": [],
         "constraints": [],
-        "capsules": [],
-        "dependency_summaries": []
+        "capsules": []
     }
 
     # Load referenced ADRs
@@ -69,19 +68,6 @@ def load_context(story_id, epic_id, root="."):
         content = load_file_content(base / "context" / "capsules" / f"{ref}.md")
         if content:
             context["capsules"].append({"name": ref, "content": content})
-
-    # Load dependency summaries
-    deps = story_data.get("dependencies", [])
-    for dep_id in deps:
-        # Find dep story's summary.md
-        for dep_status in ["done", "active"]:
-            summary_path = stories_base / dep_status / dep_id / "summary.md"
-            if summary_path.exists():
-                context["dependency_summaries"].append({
-                    "story_id": dep_id,
-                    "summary": summary_path.read_text()
-                })
-                break
 
     return context
 

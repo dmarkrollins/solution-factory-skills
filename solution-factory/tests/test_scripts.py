@@ -720,7 +720,7 @@ class TestStoryActivator:
         )
         assert active_dir.exists()
         assert (active_dir / "local.md").exists()
-        assert (active_dir / "summary.md").exists()
+        assert not (active_dir / "summary.md").exists()
 
     def test_activate_already_active_is_idempotent(self, proj):
         gs = _modules["generate_sequence"]
@@ -1052,32 +1052,6 @@ class TestContextLoader:
         assert result["decisions"][0]["id"] == "adr-001"
         assert len(result["constraints"]) == 1
         assert len(result["capsules"]) == 1
-
-    def test_load_context_loads_dependency_summary(self, proj):
-        scaffold = _modules["scaffold_structure"]
-        scaffold.create_epic(1, root=str(proj))
-        # Story 01.002 depends on 01.001
-        story_data = make_minimal_story_data("01.002", "epic-01")
-        story_data["dependencies"] = ["01.001"]
-        write_story_yaml(proj, "epic-01", "01.002", "backlog", story_data=story_data)
-
-        # 01.001 is done with a summary
-        done_dir = (
-            proj
-            / ".solution-factory"
-            / "epics"
-            / "epic-01"
-            / "stories"
-            / "done"
-            / "01.001"
-        )
-        done_dir.mkdir(parents=True, exist_ok=True)
-        (done_dir / "summary.md").write_text("Summary of 01.001")
-
-        cl = _modules["context_loader"]
-        result = cl.load_context("01.002", "epic-01", root=str(proj))
-        assert len(result["dependency_summaries"]) == 1
-        assert result["dependency_summaries"][0]["story_id"] == "01.001"
 
     def test_load_full_context_includes_story_data(self, proj):
         scaffold = _modules["scaffold_structure"]

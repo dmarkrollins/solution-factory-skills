@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Activate a story: move from backlog to active, create local.md and summary.md.
+Activate a story: move from backlog to active, create local.md.
 Updates sequence.json status and moves the story folder.
 """
 
@@ -62,28 +62,12 @@ def activate_story(story_id, epic_id, root="."):
 
 """)
 
-    # Create summary.md (high-level for dependency loading)
-    summary_md = active_dir / "summary.md"
-    if not summary_md.exists():
-        summary_md.write_text(f"""# Story {story_id} — Summary
-
-## Objective
-<!-- Filled during planning phase -->
-
-## Key Decisions
-<!-- Key technical decisions made during planning/implementation -->
-
-## Dependencies Provided
-<!-- What this story provides to downstream stories -->
-
-""")
-
     return {
         "success": True,
         "story_id": story_id,
         "epic_id": epic_id,
         "active_path": str(active_dir),
-        "files_created": ["local.md", "summary.md"]
+        "files_created": ["local.md"]
     }
 
 

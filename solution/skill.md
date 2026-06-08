@@ -409,6 +409,14 @@ git checkout -b feature/[STORY_ID]-[slug]
 ```
 - Example: `feature/01.003-user-registration`
 
+**Then commit `plan.md` as the FIRST commit on the branch — before any code:**
+```bash
+git add .solution-factory/epics/[EPIC_ID]/stories/active/[STORY_ID]/plan.md
+git commit -m "Plan story [STORY_ID]: [title]"
+```
+This makes "plan precedes code" a visible git fact. No implementation commit may
+precede the plan commit.
+
 ### 4b. Route to Implementation Agent
 
 Determine story type from the plan's **Files to Create/Modify** list:
@@ -458,6 +466,7 @@ For mixed stories or any story implemented inline:
 ### 4d. Implementation Rules
 
 - **Stay on feature branch** — never checkout main during implementation
+- **plan.md is commit #1** — it must be the first commit on the feature branch; no implementation commit may precede it (4a)
 - **Incremental commits** — not just at end (mandatory gate)
 - **Track blockers** in local.md
 - **If blocked**: document in local.md, present to user with 2-3 options, wait for decision
@@ -955,13 +964,19 @@ cd $(git rev-parse --show-toplevel) && git checkout feature/[ID]-[slug]
   When spawned, `test-engineer` runs Phase 5a as written and additionally judges
   whether coverage is adequate for the acceptance criteria. For routine stories
   below both triggers, **skip it** — do not spawn (keeps trivial stories cheap).
-- Spawn `code-reviewer` (5a.5), then `security-engineer` (5a.6) — both **model=sonnet**.
+- **Spawn `code-reviewer` (5a.5) and `security-engineer` (5a.6) IN PARALLEL** —
+  both **model=sonnet**, both in a single message (two Agent calls). They are
+  independent and read-only against the same frozen `main..feature/[ID]-[slug]`
+  diff, so there is no reason to serialize them. Collect both verdicts before
+  deciding.
 - **If any of the spawned reviewers returns NEEDS REWORK** (test-engineer included,
   when run) → re-spawn the **story-worker in `rework` mode** on the same branch,
-  passing the Critical/Important/High findings verbatim. The worker fixes, re-runs
-  tests, and returns `IMPLEMENTED`. Then re-run the gauntlet. **Retry budget: 3
-  rework cycles.** If still not clean after 3 → treat as `BLOCKED` (note: "gauntlet
-  could not reach clean after 3 rework cycles") and stop the loop.
+  passing the combined Critical/Important/High findings verbatim. The worker fixes,
+  re-runs tests, and returns `IMPLEMENTED`. Then re-run the gauntlet. **Retry
+  budget: 3 rework cycles.** If still not clean after 3 → treat as `BLOCKED` (note:
+  "gauntlet could not reach clean after 3 rework cycles") and stop the loop.
+  **Set `REWORKED = true` for this story if ≥1 rework cycle ran** — EPIC-4c uses
+  this to decide whether the full-suite backstop is needed.
 - Once code review AND security review are clean → run 5b (if enabled) and 5b.5.
 
 This gives reviews their specialization **and** author≠reviewer independence — the
@@ -972,8 +987,13 @@ reviewer never sees the worker's reasoning, only the committed diff.
 With the branch green and reviewed, the orchestrator runs the **`complete`
 command** logic from the main thread (the worker did NOT do this):
 
-- Steps 1–3: validate completion + `check_plan_complete` + full-suite re-run (the
-  independent test backstop).
+- Steps 1–3: validate completion + `check_plan_complete`, then the full-suite
+  backstop **conditionally**: re-run the full suite **only if `REWORKED == true`**
+  (the gauntlet forced ≥1 rework cycle) **or any commit changed source since the
+  worker returned**. Otherwise the working tree is byte-identical to the worker's
+  already-green Tier 2, so the re-run is a guaranteed-pass repeat — **skip it and
+  trust the worker's recorded `tier2=pass`**. Always run the cheap
+  `validate_completion` + `check_plan_complete` checks regardless.
 - Step 4: read `local.md` and **auto-promote** discoveries at/above the
   `auto_create` relevance threshold; **discard** those at/below `auto_discard`;
   collect in-between items into the run's deferred list for EPIC-5. Use the
