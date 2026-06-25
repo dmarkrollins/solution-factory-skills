@@ -1,5 +1,5 @@
 ---
-description: Break an epic into sequenced, complexity-scored stories with YAML definitions and dependency tracking
+description: Break an epic into sequenced, complexity-scored stories with JSON definitions and dependency tracking
 argument-hint: [--epic-title="title"]
 allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 ---
@@ -162,7 +162,7 @@ python3 ~/.claude/skills/solution-factory/scripts/generate_sequence.py add-story
 ### 4e. Evaluate Against Context
 
 For each story, check the reference inventory:
-- Which ADRs apply? → populate `decisions.refs` in story YAML
+- Which ADRs apply? → populate `decisions.refs` in story JSON
 - Which constraints apply? → populate `constraints.refs`
 - Which capsules are relevant? → populate `context.capsules`
 
@@ -255,8 +255,8 @@ Ask: **"Review this epic. Approve, or request changes?"**
 ## Step 7: Collaborative Refinement
 
 If user requests changes (add, remove, split, merge, resequence, clarify), apply the change, then:
-- Update story YAML files
-- Update epic YAML
+- Update story JSON files
+- Update epic JSON
 - Update sequence.json
 - Re-validate
 - Re-present summary

@@ -238,7 +238,7 @@ Complexity: [N]
 ### 3a. Understand Requirements
 
 Read from context_loader output:
-- Story YAML (goal, acceptance criteria)
+- Story JSON (goal, acceptance criteria)
 - Referenced ADRs, constraints, capsules
 - Dependency summaries
 
@@ -331,7 +331,7 @@ Continue until you can articulate:
 
 ### 3e. Create Plan
 
-Write `plan.md` directly to `.solution-factory/epics/[EPIC_ID]/stories/active/[STORY_ID]/plan.md` using all context gathered so far (story YAML, YAGNI exclusions, complexity re-assessment, interview clarifications, exploration findings). Do NOT output the plan contents to the user — write the file silently, then proceed immediately to step 3f.
+Write `plan.md` directly to `.solution-factory/epics/[EPIC_ID]/stories/active/[STORY_ID]/plan.md` using all context gathered so far (story JSON, YAGNI exclusions, complexity re-assessment, interview clarifications, exploration findings). Do NOT output the plan contents to the user — write the file silently, then proceed immediately to step 3f.
 
 Use this structure:
 
@@ -372,7 +372,7 @@ Use this structure:
 [How this will be tested]
 
 ## Acceptance Criteria Validation
-- [ ] Criterion 1 (from story YAML)
+- [ ] Criterion 1 (from story JSON)
 - [ ] Criterion 2
 ...
 ```
@@ -431,7 +431,7 @@ Determine story type from the plan's **Files to Create/Modify** list:
 
 Spawn the appropriate agent (**model=sonnet**) with:
 - Full plan.md contents
-- Story acceptance criteria (from YAML)
+- Story acceptance criteria (from JSON)
 - Feature branch name and current git status
 - List of files to create/modify
 
@@ -493,7 +493,7 @@ If the agent reports failures → review the failures → fix (inline or by re-s
 **MANDATORY — runs after tests pass, before demo scripts.**
 
 Spawn `code-reviewer` agent (**model=sonnet**) with:
-- Story YAML path: `.solution-factory/epics/[EPIC_ID]/stories/active/[STORY_ID]/[STORY_ID].json`
+- Story JSON path: `.solution-factory/epics/[EPIC_ID]/stories/active/[STORY_ID]/[STORY_ID].json`
 - Plan path: `.solution-factory/epics/[EPIC_ID]/stories/active/[STORY_ID]/plan.md`
 - ADR paths: all ADR files for IDs listed in the story's `decisions.refs` (under `.solution-factory/decisions/`)
 - Constraint paths: all constraint files for IDs listed in the story's `constraints.refs` (under `.solution-factory/constraints/`)
@@ -929,6 +929,17 @@ Pass the worker this prompt (fill in the brackets):
 > BLOCKER: <text>   # only if BLOCKED — what's needed from a human
 > ```
 
+> **If the Agent tool call itself is rejected or blocked** — the tool result
+> says the user declined the tool use, or the auto-mode permission classifier
+> denied it (often with a `Reason:` line) — this is NOT the same as the worker
+> returning `BLOCKED`; the worker never ran. Do not silently retry, skip the
+> story, or jump straight to a generic question. First **surface the rejection
+> verbatim** to the user — quote the full tool-result text, including any
+> classifier `Reason:`. Then ask how to proceed (e.g. retry the spawn, run the
+> story's phases inline in the main thread instead of via a sub-agent, or pause
+> the epic run with `/solution stop`). This applies to every Agent spawn in the
+> epic loop — the worker here, and the EPIC-4b review/security/docs agents.
+
 After the worker returns `IMPLEMENTED`, do a **cheap sanity check** before
 trusting it: confirm the feature branch exists with commits and a clean tree.
 ```bash
@@ -1068,4 +1079,8 @@ for the next epic.
 - **No new gates, no changed processing rules** — `epic` reuses Phases 1–5 and
   `complete` verbatim; it only relocates the review/completion phases to the
   orchestrator and swaps human gates for the overrides above.
+- **Spawn rejections are surfaced, not swallowed** — if any Agent tool call in
+  the loop is rejected or denied before the agent runs, show the user the raw
+  rejection/denial text (including any classifier `Reason:`) before asking how
+  to proceed. See EPIC-4 for the exact handling.
 

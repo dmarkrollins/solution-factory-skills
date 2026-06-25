@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Load referenced ADRs, constraints, and capsules for a story.
-Reads story YAML to find references, then loads their content.
+Reads story JSON to find references, then loads their content.
 Returns structured context for the LLM to consume with minimal tokens.
 """
 
@@ -23,7 +23,7 @@ def load_context(story_id, epic_id, root="."):
     """Load all context referenced by a story."""
     base = Path(root) / ".solution-factory"
 
-    # Find story YAML
+    # Find story JSON
     stories_base = base / "epics" / epic_id / "stories"
     story_data = None
     story_status = None
