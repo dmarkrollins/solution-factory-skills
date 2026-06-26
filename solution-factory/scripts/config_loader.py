@@ -22,6 +22,7 @@ DEFAULTS = {
         "require_tests": True,
         "generate_demo_scripts": False,
         "automerge": True,
+        "merge_branch": "main",
         "max_stories_per_epic": 10
     },
     "ux": {

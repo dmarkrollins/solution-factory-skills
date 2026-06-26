@@ -404,7 +404,14 @@ Then **WAIT for explicit approval**.
 **Only after plan approval.**
 
 ### 4a. Create Feature Branch
+
+Read the merge target branch from config:
 ```bash
+cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/config_loader.py . | python3 -c "import sys,json; c=json.load(sys.stdin); print(c['config']['stories'].get('merge_branch', 'main'))"
+```
+Capture the output as `MERGE_BRANCH`. Then branch from it:
+```bash
+git checkout [MERGE_BRANCH]
 git checkout -b feature/[STORY_ID]-[slug]
 ```
 - Example: `feature/01.003-user-registration`
@@ -443,8 +450,8 @@ Spawn the appropriate agent (**model=sonnet**) with:
 
 After the agent completes, verify:
 ```bash
-git log --oneline main..HEAD    # confirms incremental commits exist
-git status                      # confirms no uncommitted changes remain
+git log --oneline [MERGE_BRANCH]..HEAD    # confirms incremental commits exist
+git status                                # confirms no uncommitted changes remain
 ```
 Check that plan.md step checkboxes are updated. If the agent hit a blocker, present it to the user with 2–3 options before proceeding.
 
@@ -465,7 +472,7 @@ For mixed stories or any story implemented inline:
 
 ### 4d. Implementation Rules
 
-- **Stay on feature branch** — never checkout main during implementation
+- **Stay on feature branch** — never checkout `[MERGE_BRANCH]` during implementation
 - **plan.md is commit #1** — it must be the first commit on the feature branch; no implementation commit may precede it (4a)
 - **Incremental commits** — not just at end (mandatory gate)
 - **Track blockers** in local.md
@@ -481,8 +488,8 @@ For mixed stories or any story implemented inline:
 **MANDATORY — both tiers must pass.**
 
 Spawn `test-engineer` agent (**model=sonnet**) with:
-- Changed files list: output of `git diff --name-only main..HEAD`
-- Full diff: output of `git diff main..HEAD`
+- Changed files list: output of `git diff --name-only [MERGE_BRANCH]..HEAD`
+- Full diff: output of `git diff [MERGE_BRANCH]..HEAD`
 - Project root path
 - Request: (1) identify the project's test commands from package.json/Makefile/pyproject.toml, (2) run **Tier 1** — tests scoped to changed files for fast feedback, (3) run **Tier 2** — full test suite as safety net, (4) report pass/fail per tier with specific failure messages and fix suggestions
 
@@ -497,7 +504,7 @@ Spawn `code-reviewer` agent (**model=sonnet**) with:
 - Plan path: `.solution-factory/epics/[EPIC_ID]/stories/active/[STORY_ID]/plan.md`
 - ADR paths: all ADR files for IDs listed in the story's `decisions.refs` (under `.solution-factory/decisions/`)
 - Constraint paths: all constraint files for IDs listed in the story's `constraints.refs` (under `.solution-factory/constraints/`)
-- Instruction to run `git diff main..HEAD` itself to get the full diff
+- Instruction to run `git diff [MERGE_BRANCH]..HEAD` itself to get the full diff
 
 Review verdict:
 - **APPROVED** or **APPROVED WITH NOTES** → proceed to 5a.6. Log any notes as discoveries in `local.md`.
@@ -508,7 +515,7 @@ Review verdict:
 **MANDATORY — runs after code review passes, before demo scripts.**
 
 Spawn `security-engineer` agent (**model=sonnet**) with:
-- Instruction to run `git diff --name-only main..HEAD` and `git diff main..HEAD` itself
+- Instruction to run `git diff --name-only [MERGE_BRANCH]..HEAD` and `git diff [MERGE_BRANCH]..HEAD` itself
 - Story title and description
 
 The agent applies an internal fast-pass rule — if no attack surface is touched (no API routes, auth, data access, external I/O, or user-facing inputs), it returns "SECURITY: N/A" and the step is automatically satisfied.
@@ -552,7 +559,7 @@ python3 .solution-factory/tests/[EPIC_ID]/[STORY_ID]/run_all_demos.py
 ### 5b.5. Documentation Cleanup
 
 Spawn `documentation-writer` agent (**model=sonnet**) with:
-- Instruction to run `git diff --name-only main..HEAD` and `git diff main..HEAD` itself
+- Instruction to run `git diff --name-only [MERGE_BRANCH]..HEAD` and `git diff [MERGE_BRANCH]..HEAD` itself
 - Story title and description
 
 The agent scans existing project documentation for stale references to changed areas and updates them. If no existing docs reference the changed area, it returns "DOC: N/A" and no action is taken. Do not generate new documentation beyond what already exists unless an acceptance criterion explicitly requires it.
@@ -659,19 +666,20 @@ Tell user: **"Run `/solution complete [ID]` when ready."**
    git commit -m "Complete story [ID]: [title]"
    ```
 
-9. **Merge — check automerge config:**
+9. **Merge — check automerge config and resolve merge target:**
    ```bash
-   cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/config_loader.py . | python3 -c "import sys,json; c=json.load(sys.stdin); print(c['config']['stories'].get('automerge', True))"
+   cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/config_loader.py . | python3 -c "import sys,json; c=json.load(sys.stdin)['config']['stories']; print('automerge=%s merge_branch=%s' % (c.get('automerge', True), c.get('merge_branch', 'main')))"
    ```
-   - **If `True`** → merge immediately without asking:
+   Capture `MERGE_BRANCH` from the output.
+   - **If `automerge=True`** → merge immediately without asking:
      ```bash
-     git checkout main
+     git checkout [MERGE_BRANCH]
      git merge --no-ff feature/[STORY_ID]-[slug] -m "Merge story [ID]: [title]"
      git branch -d feature/[STORY_ID]-[slug]
      ```
-   - **If `False`** → ask user for approval, then merge if approved:
+   - **If `automerge=False`** → ask user for approval, then merge if approved:
      ```bash
-     git checkout main
+     git checkout [MERGE_BRANCH]
      git merge --no-ff feature/[STORY_ID]-[slug] -m "Merge story [ID]: [title]"
      git branch -d feature/[STORY_ID]-[slug]
      ```
@@ -786,7 +794,7 @@ Parse the epic id from arguments (e.g. `epic-03`). If none is given, run
 
 **Flags:**
 - `--review-merges` — pause before every story's merge and show the user exactly
-  what is about to land on `main`, requiring a yes/no per merge. This is the
+  what is about to land on `[MERGE_BRANCH]`, requiring a yes/no per merge. This is the
   on-demand equivalent of `automerge=false` for a single run; everything else
   stays autonomous (planning, implementation, tests, review all run unattended —
   only the merge is gated). Without this flag the run merges automatically (the
@@ -802,8 +810,9 @@ cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory
 
 Determine the active config (used in the manifest and by every worker):
 ```bash
-cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/config_loader.py . | python3 -c "import sys,json; c=json.load(sys.stdin)['config']['stories']; print('automerge=%s demo_scripts=%s require_tests=%s' % (c.get('automerge',True), c.get('generate_demo_scripts',False), c.get('require_tests',True)))"
+cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/config_loader.py . | python3 -c "import sys,json; c=json.load(sys.stdin)['config']['stories']; print('automerge=%s demo_scripts=%s require_tests=%s merge_branch=%s' % (c.get('automerge',True), c.get('generate_demo_scripts',False), c.get('require_tests',True), c.get('merge_branch','main')))"
 ```
+Capture `MERGE_BRANCH` from the output for use throughout the epic run.
 
 If the epic has no `backlog` stories → report "Nothing to run in [EPIC_ID]" and STOP.
 
@@ -816,7 +825,7 @@ Autonomous run — [EPIC_ID]: [Epic title]
 Stories to execute (sequence order):
   [ID]  [Title]   complexity [N]   deps: [list|none]
   ...
-Config: automerge=[..] · demo_scripts=[..] · require_tests=[..]
+Config: automerge=[..] · demo_scripts=[..] · require_tests=[..] · merge_branch=[..]
 Merges: [auto | review each merge (--review-merges)]
 
 Run all [N] ready stories autonomously? (yes / no)
@@ -879,16 +888,16 @@ tests), the quality gauntlet (code review, security review, docs), and the
 the preview:
 ```
 Merge review — [ID] [Title]
-  Branch:  feature/[ID]-[slug] → main
+  Branch:  feature/[ID]-[slug] → [MERGE_BRANCH]
   Commits: [N]
   Changes: [git diff --stat summary from the worker]
 
-Merge to main? (yes / no)
+Merge to [MERGE_BRANCH]? (yes / no)
 ```
 - **yes** → the orchestrator runs the merge (the same commands `complete` step 9
   uses), then continues the loop:
   ```bash
-  cd $(git rev-parse --show-toplevel) && git checkout main \
+  cd $(git rev-parse --show-toplevel) && git checkout [MERGE_BRANCH] \
     && git merge --no-ff feature/[ID]-[slug] -m "Merge story [ID]: [title]" \
     && git branch -d feature/[ID]-[slug]
   ```
@@ -908,7 +917,7 @@ definition.
 Pass the worker this prompt (fill in the brackets):
 
 > You are implementing ONE story autonomously as part of an epic run.
-> Project root: `[ROOT]`. Story: `[ID]` in epic `[EPIC_ID]`. Mode: `[start|resume]`.
+> Project root: `[ROOT]`. Story: `[ID]` in epic `[EPIC_ID]`. Mode: `[start|resume]`. Merge branch: `[MERGE_BRANCH]` (use this instead of `main` for all git diff, git log, and branch-creation commands).
 >
 > Execute the `/solution` skill's **Phases 1 through 5a (Two-Tier Testing)** exactly
 > as written in `~/.claude/skills/solution/skill.md`, then STOP. Do NOT run code
@@ -923,7 +932,7 @@ Pass the worker this prompt (fill in the brackets):
 > SUMMARY: <=2 sentences on what shipped (or why blocked)
 > BRANCH: feature/[ID]-[slug]
 > COMMITS: <count> on the feature branch
-> DIFFSTAT: <git diff --stat main..HEAD>
+> DIFFSTAT: <git diff --stat [MERGE_BRANCH]..HEAD>
 > TESTS: tier1=<pass|fail> tier2=<pass|fail>
 > DISCOVERIES: <count logged to local.md>
 > BLOCKER: <text>   # only if BLOCKED — what's needed from a human
@@ -943,7 +952,7 @@ Pass the worker this prompt (fill in the brackets):
 After the worker returns `IMPLEMENTED`, do a **cheap sanity check** before
 trusting it: confirm the feature branch exists with commits and a clean tree.
 ```bash
-cd $(git rev-parse --show-toplevel) && git rev-parse --verify feature/[ID]-[slug] >/dev/null 2>&1 && git log --oneline main..feature/[ID]-[slug] | head && git status --porcelain
+cd $(git rev-parse --show-toplevel) && git rev-parse --verify feature/[ID]-[slug] >/dev/null 2>&1 && git log --oneline [MERGE_BRANCH]..feature/[ID]-[slug] | head && git status --porcelain
 ```
 If the branch is missing, has no commits, or the worker reported `IMPLEMENTED` but
 tests as `fail`, treat it as `BLOCKED` (note: "worker reported success but branch
@@ -953,7 +962,7 @@ not ready") and stop the loop.
 
 The branch is green but **unreviewed**. The orchestrator now runs the independent
 review passes from the main thread — these are the specialized agents the worker
-cannot spawn itself. Run them against `git diff main..feature/[ID]-[slug]` exactly
+cannot spawn itself. Run them against `git diff [MERGE_BRANCH]..feature/[ID]-[slug]` exactly
 as Phases **5a (independent test review — risk-tiered, below)**, **5a.5 (code
 review)**, **5a.6 (security review)**, **5b (demo scripts, config-gated)**, and
 **5b.5 (documentation cleanup)** specify. Check out the feature branch first so the
@@ -977,7 +986,7 @@ cd $(git rev-parse --show-toplevel) && git checkout feature/[ID]-[slug]
   below both triggers, **skip it** — do not spawn (keeps trivial stories cheap).
 - **Spawn `code-reviewer` (5a.5) and `security-engineer` (5a.6) IN PARALLEL** —
   both **model=sonnet**, both in a single message (two Agent calls). They are
-  independent and read-only against the same frozen `main..feature/[ID]-[slug]`
+  independent and read-only against the same frozen `[MERGE_BRANCH]..feature/[ID]-[slug]`
   diff, so there is no reason to serialize them. Collect both verdicts before
   deciding.
 - **If any of the spawned reviewers returns NEEDS REWORK** (test-engineer included,

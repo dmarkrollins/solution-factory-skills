@@ -190,16 +190,40 @@ python3 ~/.claude/skills/solution-factory/scripts/capsule_generator.py
 
 ### 3e. Create config.json
 
-Infer configuration from the codebase analysis:
+Infer configuration from the codebase analysis and write `.solution-factory/config.json`. Start from this complete template, then adjust `ux` and `defaults` blocks based on what was detected:
 
-```bash
-# Write config.json with inferred values
+```json
+{
+    "complexity": {
+        "threshold": 3
+    },
+    "relevance": {
+        "auto_create": 8,
+        "prompt": 5,
+        "auto_discard": 4
+    },
+    "stories": {
+        "require_tests": true,
+        "generate_demo_scripts": false,
+        "automerge": true,
+        "merge_branch": "main",
+        "max_stories_per_epic": 10
+    },
+    "ux": {
+        "wireframe_path": null,
+        "default_stack": {
+            "framework": "[detected frontend framework or react]",
+            "bundler": "[detected bundler or vite]",
+            "design_system": "[detected design system or null]"
+        }
+    }
+}
 ```
 
 Populate based on findings:
-- `ux.wireframe_path` — if wireframe/mockup files found
-- `ux.default_stack` — from detected frontend framework
-- Other fields use defaults
+- `ux.wireframe_path` — if wireframe/mockup files found, set the path; otherwise `null`
+- `ux.default_stack` — from detected frontend framework, bundler, and design system
+- `stories`, `complexity`, `relevance` — keep defaults unless there is a clear project-specific reason to deviate (e.g. a data-only library has no UX, so omit the `ux` block)
 
 ### 3f. Create manifest.json
 

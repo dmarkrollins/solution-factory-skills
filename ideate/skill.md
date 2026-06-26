@@ -177,7 +177,11 @@ Write `.solution-factory/config.json`:
         "auto_discard": 4
     },
     "stories": {
-        "require_tests": true
+        "require_tests": true,
+        "generate_demo_scripts": false,
+        "automerge": true,
+        "merge_branch": "main",
+        "max_stories_per_epic": 10
     },
     "ux": {
         "wireframe_path": null,

@@ -203,6 +203,26 @@ class TestConfigLoader:
         merged = loader.deep_merge(base, override)
         assert merged["a"] == 42
 
+    def test_merge_branch_defaults_to_main(self, proj):
+        loader = _modules["config_loader"]
+        result = loader.load_config(root=str(proj))
+        assert result["config"]["stories"]["merge_branch"] == "main"
+
+    def test_merge_branch_override_from_config(self, proj):
+        loader = _modules["config_loader"]
+        config_path = proj / ".solution-factory" / "config.json"
+        config_path.write_text(json.dumps({"stories": {"merge_branch": "develop"}}))
+        result = loader.load_config(root=str(proj))
+        assert result["config"]["stories"]["merge_branch"] == "develop"
+
+    def test_merge_branch_survives_partial_stories_override(self, proj):
+        loader = _modules["config_loader"]
+        config_path = proj / ".solution-factory" / "config.json"
+        config_path.write_text(json.dumps({"stories": {"automerge": False}}))
+        result = loader.load_config(root=str(proj))
+        assert result["config"]["stories"]["merge_branch"] == "main"
+        assert result["config"]["stories"]["automerge"] is False
+
 
 # ---------------------------------------------------------------------------
 # 2. scaffold_structure
