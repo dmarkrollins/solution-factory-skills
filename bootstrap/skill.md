@@ -1,6 +1,6 @@
 ---
 description: Analyze an existing codebase and scaffold .solution-factory/ with inferred decisions, constraints, and capsules
-argument-hint: [--root=path]
+argument-hint: [help | --root=path]
 allowed-tools: [Read, Glob, Grep, Bash, Write, Edit, Agent]
 ---
 
@@ -12,6 +12,72 @@ Reverse-engineer architectural context from an existing codebase. Scan code, inf
 **Contrast with `/ideate`:** Ideate is greenfield (Q&A-driven). Bootstrap is brownfield (analysis-driven).
 
 **Pipeline position:** **`/bootstrap`** → `/create-stories` → `/solution`
+
+---
+
+# Argument Routing
+
+Parse arguments before doing anything else:
+- `help` → print the reference in **Command: help** below and **STOP**. Do not run any scripts.
+- anything else (or no arguments) → run the bootstrap workflow.
+
+---
+
+# Command: help
+
+Print the reference below **verbatim** — it is self-contained, so no scripts or file reads are needed. Do not run any scripts for this command.
+
+```
+/bootstrap — analyze an existing codebase and scaffold .solution-factory/ context.
+Pipeline: /bootstrap → /create-stories → /solution
+
+USAGE
+  /bootstrap             Analyze the current directory
+  /bootstrap --root=path Analyze a specific path
+  /bootstrap help        Show this reference
+
+WHAT IT DOES
+  Scans your codebase with 3 parallel read-only agents, then:
+    1. Infers architectural decisions  → ADRs in .solution-factory/decisions/
+    2. Identifies constraints          → files in .solution-factory/constraints/
+    3. Summarizes architecture         → .solution-factory/docs/architecture.md
+    4. Generates context capsules      → .solution-factory/context/capsules/
+    5. Writes config.json              → automerge, merge_branch, complexity threshold, UX stack
+    6. Writes manifest.json            → project name, description, schema version
+    7. Presents findings for your review and waits for approval
+
+  If .solution-factory/ already exists, bootstrap warns you and offers to
+  merge new findings into the existing context rather than overwriting.
+
+WHEN TO USE
+  /bootstrap — existing codebase you want to harness with Solution Factory
+  /ideate    — greenfield project starting from scratch (Q&A-driven ideation)
+
+WHAT YOU GET
+  decisions/    5–15 ADRs inferred from framework, db, auth, and tooling patterns
+  constraints/  3–8 constraints from engine requirements, CORS, env vars, etc.
+  docs/         architecture.md summarizing components, data flow, and API structure
+  context/      capsules used by /solution for automatic context injection per story
+  config.json   merge_branch, automerge, complexity threshold, require_tests, UX stack
+  manifest.json project metadata (name, description, schema version)
+
+KEY CONFIG VALUES (config.json → stories block)
+  merge_branch  branch stories merge back to (default: "main"; set to "develop" for
+                staging-based CI or to avoid collisions on shared codebases)
+  automerge     merge automatically after /solution complete (default: true)
+  require_tests enforce test presence before completion (default: true)
+
+REVIEW LOOP
+  After analysis, bootstrap presents a structured summary and waits for your
+  approval. You can:
+    - Approve as-is → proceeds to finalize
+    - Correct a wrong inference → updates the relevant ADR or constraint
+    - Add a missing decision or constraint → creates a new file
+  Corrections trigger capsule regeneration and re-present the summary.
+
+NEXT STEP
+  /create-stories — break your first epic into sequenced, dependency-tracked stories
+```
 
 ---
 
