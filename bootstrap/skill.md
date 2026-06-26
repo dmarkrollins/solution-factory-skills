@@ -25,11 +25,13 @@ Parse arguments before doing anything else:
 
 # Command: help
 
-Print the reference below **verbatim** — it is self-contained, so no scripts or file reads are needed. Do not run any scripts for this command.
+1. Print the skill-specific block below verbatim.
+2. Read `~/.claude/skills/solution-factory/docs/pipeline-help.md` using the Read tool and print its full contents verbatim immediately after, with no gap between the two blocks.
+
+Do not run any scripts. Do not summarize or paraphrase either block.
 
 ```
 /bootstrap — analyze an existing codebase and scaffold .solution-factory/ context.
-Pipeline: /bootstrap → /create-stories → /solution
 
 USAGE
   /bootstrap             Analyze the current directory
@@ -42,7 +44,7 @@ WHAT IT DOES
     2. Identifies constraints          → files in .solution-factory/constraints/
     3. Summarizes architecture         → .solution-factory/docs/architecture.md
     4. Generates context capsules      → .solution-factory/context/capsules/
-    5. Writes config.json              → automerge, merge_branch, complexity threshold, UX stack
+    5. Writes config.json              → stack, merge_branch, thresholds
     6. Writes manifest.json            → project name, description, schema version
     7. Presents findings for your review and waits for approval
 
@@ -53,19 +55,11 @@ WHEN TO USE
   /bootstrap — existing codebase you want to harness with Solution Factory
   /ideate    — greenfield project starting from scratch (Q&A-driven ideation)
 
-WHAT YOU GET
+WHAT YOU GET (bootstrap-specific)
   decisions/    5–15 ADRs inferred from framework, db, auth, and tooling patterns
   constraints/  3–8 constraints from engine requirements, CORS, env vars, etc.
   docs/         architecture.md summarizing components, data flow, and API structure
-  context/      capsules used by /solution for automatic context injection per story
-  config.json   merge_branch, automerge, complexity threshold, require_tests, UX stack
-  manifest.json project metadata (name, description, schema version)
-
-KEY CONFIG VALUES (config.json → stories block)
-  merge_branch  branch stories merge back to (default: "main"; set to "develop" for
-                staging-based CI or to avoid collisions on shared codebases)
-  automerge     merge automatically after /solution complete (default: true)
-  require_tests enforce test presence before completion (default: true)
+  config.json   UX stack detected from codebase; all other values use defaults
 
 REVIEW LOOP
   After analysis, bootstrap presents a structured summary and waits for your

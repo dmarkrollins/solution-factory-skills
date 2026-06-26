@@ -53,13 +53,13 @@ Never assume the cwd is correct after running package-level commands (e.g. `npm 
 
 # Command: help
 
-Print the reference below **verbatim** — it is self-contained, so no code or
-script reading is needed to learn how to drive the skill. Do not run any scripts
-for this command.
+1. Print the skill-specific block below verbatim.
+2. Read `~/.claude/skills/solution-factory/docs/pipeline-help.md` using the Read tool and print its full contents verbatim immediately after, with no gap between the two blocks.
+
+Do not run any scripts. Do not summarize or paraphrase either block.
 
 ```
 /solution — implement stories from .solution-factory/ with quality gates.
-Pipeline: /ideate → /create-stories → /solution
 
 WORKING A SINGLE STORY (interactive — you approve the plan, answer questions):
   /solution                 Resume active epic if one exists, else find next ready story
@@ -96,10 +96,6 @@ INTERACTIVE vs AUTONOMOUS
   config — the on-demand equivalent of automerge=false. Only the merge is gated;
   everything else still runs unattended.
 
-CONFIG (.solution-factory/config.json — stories block):
-  automerge, generate_demo_scripts, require_tests, complexity threshold, and
-  discovery relevance thresholds all apply in BOTH modes.
-
 STOP / RESUME AN EPIC RUN
   Hit Escape to interrupt, then:
     /solution stop     saves run state to the epic JSON (via epic_run_manager.py)
@@ -110,10 +106,6 @@ STOP / RESUME AN EPIC RUN
   State is stored in the `run` block of .solution-factory/epics/<id>/<id>.json:
     status: active | stopped | complete
     current_story, review_merges, started_at, stopped_at
-
-CONFIG (.solution-factory/config.json — stories block):
-  automerge, generate_demo_scripts, require_tests, complexity threshold, and
-  discovery relevance thresholds all apply in BOTH modes.
 
 TYPICAL FLOW
   /solution status          see what's ready

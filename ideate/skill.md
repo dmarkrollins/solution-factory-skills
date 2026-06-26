@@ -22,11 +22,13 @@ Parse arguments before doing anything else:
 
 # Command: help
 
-Print the reference below **verbatim** — it is self-contained, so no scripts or file reads are needed. Do not run any scripts for this command.
+1. Print the skill-specific block below verbatim.
+2. Read `~/.claude/skills/solution-factory/docs/pipeline-help.md` using the Read tool and print its full contents verbatim immediately after, with no gap between the two blocks.
+
+Do not run any scripts. Do not summarize or paraphrase either block.
 
 ```
 /ideate — guided brainstorming that scaffolds .solution-factory/ for a new project.
-Pipeline: /ideate → /create-stories → /solution
 
 USAGE
   /ideate                Start or resume ideation in the current directory
@@ -40,7 +42,7 @@ WHAT IT DOES
     2. Writes constraints         → .solution-factory/constraints/
     3. Writes docs                → .solution-factory/docs/requirements.md + architecture.md
     4. Generates context capsules → .solution-factory/context/capsules/
-    5. Writes config.json         → automerge, merge_branch, complexity threshold, UX stack
+    5. Writes config.json         → merge_branch, automerge, complexity threshold, UX stack
     6. Writes manifest.json       → project name, description, schema version
 
   If .solution-factory/ already exists, ideate asks whether to add a new
@@ -57,19 +59,11 @@ BRAINSTORMING FLOW
   Step 4  Confirm scope — ideate challenges assumptions and pushes back on
           scope creep before declaring "enough to scaffold"
 
-WHAT YOU GET
-  decisions/    ADRs capturing each architectural choice with context and trade-offs
-  constraints/  Constraint files covering tech limits, compliance, integrations
-  docs/         requirements.md and architecture.md from the brainstorming session
-  context/      capsules used by /solution for automatic context injection per story
-  config.json   merge_branch, automerge, complexity threshold, require_tests, UX stack
-  manifest.json project metadata (name, description, schema version)
-
-KEY CONFIG VALUES (config.json → stories block)
-  merge_branch  branch stories merge back to (default: "main"; set to "develop" for
-                staging-based CI or to avoid collisions on shared codebases)
-  automerge     merge automatically after /solution complete (default: true)
-  require_tests enforce test presence before completion (default: true)
+WHAT YOU GET (ideate-specific)
+  decisions/    ADRs from the brainstorming session — one per architectural choice
+  constraints/  Constraint files surfaced during the Q&A
+  docs/         requirements.md and architecture.md written from the conversation
+  config.json   Values confirmed with you during the session (UX stack, thresholds)
 
 NEXT STEP
   /create-stories — break your first epic into sequenced, dependency-tracked stories

@@ -1,6 +1,6 @@
 ---
 description: Break an epic into sequenced, complexity-scored stories with JSON definitions and dependency tracking
-argument-hint: [--epic-title="title"]
+argument-hint: [help | --epic-title="title"]
 allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 ---
 
@@ -9,6 +9,80 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 Break down a brainstormed epic into sequenced stories stored as JSON files in `.solution-factory/`. Each story is complexity-scored, dependency-tracked, and evaluated against existing ADRs/constraints/capsules.
 
 **Pipeline position:** `/ideate` → **`/create-stories`** → `/solution`
+
+---
+
+# Argument Routing
+
+Parse arguments before doing anything else:
+- `help` → print the reference in **Command: help** below and **STOP**. Do not run any scripts.
+- anything else (or no arguments) → run the create-stories workflow.
+
+---
+
+# Command: help
+
+1. Print the skill-specific block below verbatim.
+2. Read `~/.claude/skills/solution-factory/docs/pipeline-help.md` using the Read tool and print its full contents verbatim immediately after, with no gap between the two blocks.
+
+Do not run any scripts. Do not summarize or paraphrase either block.
+
+```
+/create-stories — break an epic into sequenced, complexity-scored stories.
+
+USAGE
+  /create-stories                      Start a new epic interactively
+  /create-stories --epic-title="title" Seed the epic title up front
+  /create-stories help                 Show this reference
+
+PREREQUISITES
+  .solution-factory/ must exist (run /ideate or /bootstrap first).
+  At least some decisions or constraints should be present for context
+  evaluation — without them, ADR/constraint refs in stories will be empty.
+
+WHAT IT DOES
+  1. Asks for the epic focus (one question)
+  2. Drafts vertically-sliced stories using a Plan agent (model: sonnet)
+  3. Enforces the per-epic cap — splits into sequential epics if scope exceeds
+     the cap rather than dropping work
+  4. Runs a cross-story duplication filter — merges or rewrites "test twin"
+     stories whose AC restate a dependency's AC (require_tests means the
+     implementing story already ships those tests)
+  5. Scores each story on 4 dimensions; splits any that exceed the threshold
+  6. Sequences stories by dependency order (foundation → vertical slices →
+     enhancements → integrations)
+  7. Evaluates each story against ADRs, constraints, and capsules
+  8. Writes story JSON, epic JSON, and updates sequence.json
+  9. Validates and presents the epic for your review
+
+STORY SCORING
+  Change Surface   0–3  (file | layer | stack | cross-stack)
+  Implementation   0–3  (copy | familiar | new pattern | new arch)
+  Uncertainty      0–2  (clear | minor unknowns | significant unknowns)
+  Scope            0–2  (1-2 AC | 3-4 AC | 5+ AC)
+  Sum must be ≤ complexity.threshold — stories over threshold are split, no exceptions.
+
+KEY PRINCIPLES
+  Vertical slices     thin working features end-to-end, not horizontal layers
+  Tests travel with   never a standalone "test <feature X>" story when the
+  their feature       feature story's require_tests already covers it
+  Foundation first    models/schema/core before feature slices
+  IDs are numeric     no letter suffixes (01.001, 01.002 — never 01.001a)
+  Execution order     array position in sequence.json, NOT numeric sort
+
+INSERTION MODE
+  If you describe work that belongs in an existing in-progress epic,
+  /create-stories detects this and inserts stories at the right position
+  rather than opening a new epic.
+
+REFINEMENT LOOP
+  After presenting the epic summary, /create-stories waits for your approval.
+  You can add, remove, split, merge, or resequence stories before approving.
+
+NEXT STEP
+  /solution          implement the next ready story interactively
+  /solution epic NN  run all stories in epic NN autonomously
+```
 
 **Key principles:**
 - Stories MUST have complexity ≤ threshold from `config.json` (default: 3)
