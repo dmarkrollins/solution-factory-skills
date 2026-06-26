@@ -62,6 +62,19 @@ STORY SCORING
   Scope            0–2  (1-2 AC | 3-4 AC | 5+ AC)
   Sum must be ≤ complexity.threshold — stories over threshold are split, no exceptions.
 
+  Implementation calibration (most commonly over-scored):
+    I=0  Adding a field to an interface, removing an import, prop drilling,
+         array add/remove when the pattern already exists, adding a constant
+    I=1  New validation logic in an existing handler, new component following
+         established conventions, conditional render with an already-used hook
+    I=2  Pattern not yet used in this codebase (first multi-step wizard, first
+         optimistic UI update, new middleware layer)
+    I=3  New infrastructure resource, new AWS service, new cross-cutting arch
+
+  Sanity check: if more than half the stories score at the threshold, that is
+  a calibration error — re-examine Implementation and Change Surface first.
+  A healthy epic has a mix of 1s, 2s, and a few 3s.
+
 KEY PRINCIPLES
   Vertical slices     thin working features end-to-end, not horizontal layers
   Tests travel with   never a standalone "test <feature X>" story when the
@@ -208,7 +221,31 @@ State your duplication analysis (which dependency pairs were checked, what overl
 
 ### 4b. Score Complexity
 
-Score each story on 4 dimensions (0–3 each): **Change Surface** (file → layer → stack), **Implementation** (copy → familiar → new pattern → new architecture), **Uncertainty** (clear=0, minor=1, significant=2; max 2), **Scope** (1-2 criteria=0, 3-4=1, 5+=2; max 2). Sum must be ≤ threshold (default 3).
+Score each story on 4 dimensions. Sum must be ≤ threshold (default 3).
+
+| Dimension | 0 | 1 | 2 | 3 |
+|-----------|---|---|---|---|
+| **Change Surface** | single file | single layer / package | full stack (frontend + backend) | cross-stack + infra |
+| **Implementation** | copy/paste | familiar pattern | new pattern for this codebase | new architecture |
+| **Uncertainty** | clear | minor unknowns | significant unknowns | *(max 2)* |
+| **Scope** | 1–2 AC | 3–4 AC | 5+ AC | *(max 2)* |
+
+**Calibration examples for Implementation (the most commonly over-scored dimension):**
+- I=0 (copy/paste): adding a field to a TypeScript interface, removing an import, prop drilling, `useState` with array spread add/remove when the same pattern already exists elsewhere in the codebase, adding a constant, writing a new test that follows an existing fixture pattern
+- I=1 (familiar pattern): adding validation logic to an existing handler, new React component using established project conventions, adding a conditional render using a hook already used elsewhere (`useMatch`, `useDisclosure`), extending an existing API with a new optional field
+- I=2 (new pattern): introducing a pattern not yet used in this codebase (e.g. multi-step wizard if none exist, optimistic UI if none exist, a new middleware layer)
+- I=3 (new architecture): new infrastructure resource, new AWS service, new cross-cutting concern that changes how the whole system works
+
+**Post-scoring sanity check (MANDATORY before proceeding to 4c):**
+
+After scoring all stories, count how many are at the complexity threshold. If **more than half** are at the threshold, that is a strong signal of systematic over-scoring — not that the work is genuinely hard. Apply this check:
+
+1. Look at every story scored at the threshold. For each, ask: *"Could a developer who knows this codebase complete this in a single focused session without significant design decisions?"* If yes, it is likely over-scored.
+2. Re-examine the **Implementation** dimension first — it is the most commonly inflated. Copy/paste and prop-drilling are I=0, not I=1. Adding a field to an existing interface is I=0. A pattern that already appears elsewhere in the codebase is I=0 or I=1 at most.
+3. Re-examine **Change Surface** — editing one file is S=0 even if that file is tested (the test file is part of the same unit). S=1 requires touching files in meaningfully different packages or layers.
+4. After re-scoring, state the before/after count of threshold-scored stories and explain what changed and why.
+
+A healthy epic has a mix of complexity scores (1s, 2s, and a few 3s). An epic where every story scores at the threshold is almost always a calibration error, not a genuinely hard epic.
 
 ### 4c. Split Over-Threshold Stories
 
