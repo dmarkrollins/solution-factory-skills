@@ -1,6 +1,6 @@
 ---
 description: Guided brainstorming and solution ideation — scaffolds .solution-factory/ with decisions, constraints, and docs
-argument-hint: [project-name]
+argument-hint: [help | project-name]
 allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 ---
 
@@ -9,6 +9,73 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 Guide the user through structured ideation for a project or feature. Challenge their thinking, capture decisions and constraints, then scaffold `.solution-factory/` with everything needed for `/create-stories` to generate epics.
 
 **Pipeline position:** `/ideate` → `/create-stories` → `/solution`
+
+---
+
+# Argument Routing
+
+Parse arguments before doing anything else:
+- `help` → print the reference in **Command: help** below and **STOP**. Do not run any scripts.
+- anything else (or no arguments) → run the ideation workflow.
+
+---
+
+# Command: help
+
+Print the reference below **verbatim** — it is self-contained, so no scripts or file reads are needed. Do not run any scripts for this command.
+
+```
+/ideate — guided brainstorming that scaffolds .solution-factory/ for a new project.
+Pipeline: /ideate → /create-stories → /solution
+
+USAGE
+  /ideate                Start or resume ideation in the current directory
+  /ideate [project-name] Start with a project name pre-filled
+  /ideate help           Show this reference
+
+WHAT IT DOES
+  Leads you through a structured Q&A — one question at a time — to surface
+  decisions, constraints, and requirements, then:
+    1. Writes ADRs                → .solution-factory/decisions/
+    2. Writes constraints         → .solution-factory/constraints/
+    3. Writes docs                → .solution-factory/docs/requirements.md + architecture.md
+    4. Generates context capsules → .solution-factory/context/capsules/
+    5. Writes config.json         → automerge, merge_branch, complexity threshold, UX stack
+    6. Writes manifest.json       → project name, description, schema version
+
+  If .solution-factory/ already exists, ideate asks whether to add a new
+  epic's worth of context or start fresh.
+
+WHEN TO USE
+  /ideate    — greenfield project or feature, starting from scratch
+  /bootstrap — existing codebase you want to analyze and harness automatically
+
+BRAINSTORMING FLOW
+  Step 1  Understand the problem (what, who, success criteria)
+  Step 2  Explore architecture (runtime, data, API, auth, frontend, testing)
+  Step 3  Identify constraints (tech, performance, compliance, integrations)
+  Step 4  Confirm scope — ideate challenges assumptions and pushes back on
+          scope creep before declaring "enough to scaffold"
+
+WHAT YOU GET
+  decisions/    ADRs capturing each architectural choice with context and trade-offs
+  constraints/  Constraint files covering tech limits, compliance, integrations
+  docs/         requirements.md and architecture.md from the brainstorming session
+  context/      capsules used by /solution for automatic context injection per story
+  config.json   merge_branch, automerge, complexity threshold, require_tests, UX stack
+  manifest.json project metadata (name, description, schema version)
+
+KEY CONFIG VALUES (config.json → stories block)
+  merge_branch  branch stories merge back to (default: "main"; set to "develop" for
+                staging-based CI or to avoid collisions on shared codebases)
+  automerge     merge automatically after /solution complete (default: true)
+  require_tests enforce test presence before completion (default: true)
+
+NEXT STEP
+  /create-stories — break your first epic into sequenced, dependency-tracked stories
+```
+
+---
 
 # Workflow
 
