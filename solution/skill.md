@@ -645,7 +645,7 @@ Tell user: **"Run `/solution complete [ID]` when ready."**
      --discoveries '[...]'
    ```
 
-   For items needing confirmation → present to user one at a time, ask yes/no.
+   For items needing confirmation → present to user one at a time with a **Recommendation: Yes / No** and a one-sentence reason based on the discovery's breadth of applicability and relevance score. Ask yes/no.
    For confirmed items:
    ```bash
    python3 ~/.claude/skills/solution-factory/scripts/discovery_promoter.py confirm \
@@ -1061,7 +1061,7 @@ Done: [X]/[N]   Blocked: [Y]   Remaining backlog: [Z]
 ```
 
 **Deferred discoveries** (collected by the orchestrator during each story's
-EPIC-4c completion): present each one at a time, ask yes/no, and for confirmed
+EPIC-4c completion): present each one at a time with a **Recommendation: Yes / No** and a one-sentence reason based on the discovery's breadth of applicability and relevance score, ask yes/no, and for confirmed
 items run (same strict JSON schema as the `complete` command step 4 — `content`
 field, not `body`; `source_story` required):
 ```bash
