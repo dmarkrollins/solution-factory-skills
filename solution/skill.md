@@ -33,7 +33,7 @@ Never assume the cwd is correct after running package-level commands (e.g. `npm 
 /solution next         → Resume active epic if one exists, else find next ready story
 /solution list [--status] → List stories with optional filter
 /solution start <id>   → Start a story (planning → implementation)
-/solution resume       → Resume in-progress single story
+/solution resume       → Resume paused epic run if one exists, else resume in-progress single story
 /solution complete <id> → Complete a story
 /solution rollback <id> → Reopen completed story
 /solution plan <id>    → Create/review plan only
@@ -65,7 +65,7 @@ WORKING A SINGLE STORY (interactive — you approve the plan, answer questions):
   /solution                 Resume active epic if one exists, else find next ready story
   /solution next            Same as above (explicit)
   /solution start <id>      Start a specific story (e.g. /solution start 03.002)
-  /solution resume          Pick up the in-progress single story where it left off
+  /solution resume          Resume paused epic run if one exists, else pick up in-progress story
   /solution plan <id>       Write/refine a plan only — no branch, no code
   /solution complete <id>   Validate, test, merge, and close a finished story
   /solution rollback <id>   Reopen a completed story as active
@@ -101,7 +101,8 @@ STOP / RESUME AN EPIC RUN
     /solution stop     saves run state to the epic JSON (via epic_run_manager.py)
                        and commits it — safe to close Claude
     /solution next     detects the paused run and resumes the EPIC-3 loop
-                       automatically; falls back to next single story if no run found
+    /solution resume   same — both commands check for a paused epic run first,
+                       then fall back to the next/active single story if no run found
 
   State is stored in the `run` block of .solution-factory/epics/<id>/<id>.json:
     status: active | stopped | complete
@@ -572,24 +573,36 @@ Tell user: **"Run `/solution complete [ID]` when ready."**
 
 # Command: resume
 
-1. Find active story:
+1. **Check for paused epic run:**
    ```bash
-   python3 ~/.claude/skills/solution-factory/scripts/story_resolver.py next
+   cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py find --root .
+   ```
+   - If `found: true` → announce `[RESUMING EPIC] [epic_id]: [title]`, flip to
+     active, then re-enter the EPIC-3 orchestration loop using the stored
+     `epic_id` and `review_merges`:
+     ```bash
+     cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py start --epic [epic_id] --root .
+     ```
+   - If `found: false` → continue to step 2.
+
+2. **Find active single story:**
+   ```bash
+   cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/story_resolver.py next
    ```
    Should return `status: "active"`.
 
-2. Announce **[RESUMING]**
+3. Announce **[RESUMING]**
 
-3. Load context:
+4. Load context:
    ```bash
-   python3 ~/.claude/skills/solution-factory/scripts/context_loader.py full --story [ID] --epic [EPIC_ID]
+   cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/context_loader.py full --story [ID] --epic [EPIC_ID]
    ```
 
-4. Read `plan.md` — check which steps are complete (checked boxes)
+5. Read `plan.md` — check which steps are complete (checked boxes)
 
-5. Check git status — understand current branch state
+6. Check git status — understand current branch state
 
-6. Continue implementation from where it left off
+7. Continue implementation from where it left off
 
 ---
 
