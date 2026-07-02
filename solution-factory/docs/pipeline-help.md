@@ -1,9 +1,12 @@
 ## SOLUTION FACTORY PIPELINE
 
   /ideate or /bootstrap  →  /create-stories  →  /solution
+                 /ideas  →  /create-stories --from-idea  ↗
 
   /ideate          Greenfield: Q&A-driven brainstorming to design a project from scratch
   /bootstrap       Brownfield: scans an existing codebase and infers all context
+  /ideas           Lightweight backlog: capture → triage → plan a single idea, then
+                   hand it to /create-stories --from-idea when ready to build
   /create-stories  Breaks an epic into complexity-scored, dependency-tracked stories
   /solution        Implements stories with planning gates, tests, reviews, and merges
 
@@ -13,6 +16,9 @@
   constraints/  Constraint files for tech limits, compliance, and integrations
   docs/         Architecture and requirements docs from ideation or bootstrap
   context/      Capsules auto-injected per story for architectural context
+  ideas/        Backlog ideas (IDEA-NNN) from /ideas — raw/triaged/planning/
+                planned/promoted/discarded, each with idea.md and (once
+                planned) a plan.md
   epics/        Epic and story JSON files, plans, and completion artifacts
   tests/        Demo scripts generated per story (when generate_demo_scripts=true)
   config.json   Project-level configuration (see KEY CONFIG VALUES below)

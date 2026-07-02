@@ -67,6 +67,9 @@ _script_names = [
     "check_venv",
     "wireframe_linker",
     "epic_run_manager",
+    "idea_store",
+    "idea_plan_check",
+    "read_idea_plan",
 ]
 for _name in _script_names:
     try:
@@ -1737,3 +1740,227 @@ class TestEpicRunManager:
         result = erm.find_active_run(root=str(proj))
         assert result["found"] is True
         assert result["epic_id"] == "epic-01"  # sorted glob, epic-01 first
+
+
+# ---------------------------------------------------------------------------
+# 20. idea_store
+# ---------------------------------------------------------------------------
+
+
+class TestIdeaStore:
+    def test_add_works_without_full_scaffold(self, tmp_path):
+        """Capture must not require .solution-factory/ to exist yet."""
+        store = _modules["idea_store"]
+        assert not (tmp_path / ".solution-factory").exists()
+        result = store.add("Dark mode toggle", "Users keep asking for it.", root=str(tmp_path))
+        assert result["success"] is True
+        assert result["id"] == "IDEA-001"
+        assert (tmp_path / ".solution-factory" / "ideas" / "IDEA-001" / "idea.md").exists()
+        # Only the ideas/ folder was scaffolded, not the full tree
+        assert not (tmp_path / ".solution-factory" / "decisions").exists()
+
+    def test_add_allocates_sequential_ids(self, tmp_path):
+        store = _modules["idea_store"]
+        first = store.add("First idea", root=str(tmp_path))
+        second = store.add("Second idea", root=str(tmp_path))
+        assert first["id"] == "IDEA-001"
+        assert second["id"] == "IDEA-002"
+
+    def test_add_defaults_to_raw_state(self, tmp_path):
+        store = _modules["idea_store"]
+        store.add("First idea", root=str(tmp_path))
+        shown = store.show("IDEA-001", root=str(tmp_path))
+        assert shown["frontmatter"]["state"] == "raw"
+
+    def test_list_and_show_roundtrip(self, tmp_path):
+        store = _modules["idea_store"]
+        store.add("First idea", "some body text", root=str(tmp_path))
+        listing = store.list_ideas(root=str(tmp_path))
+        assert len(listing["ideas"]) == 1
+        assert listing["ideas"][0]["id"] == "IDEA-001"
+        assert listing["ideas"][0]["title"] == "First idea"
+
+        shown = store.show("IDEA-001", root=str(tmp_path))
+        assert "some body text" in shown["body"]
+
+    def test_list_filters_by_state(self, tmp_path):
+        store = _modules["idea_store"]
+        store.add("Keep raw", root=str(tmp_path))
+        store.add("Will triage", root=str(tmp_path))
+        store.set_state("IDEA-002", "triaged", root=str(tmp_path))
+
+        raw_only = store.list_ideas(root=str(tmp_path), state="raw")
+        assert [i["id"] for i in raw_only["ideas"]] == ["IDEA-001"]
+
+    def test_show_missing_idea_errors(self, tmp_path):
+        store = _modules["idea_store"]
+        result = store.show("IDEA-999", root=str(tmp_path))
+        assert "error" in result
+
+    def test_set_state_rejects_invalid_state(self, tmp_path):
+        store = _modules["idea_store"]
+        store.add("First idea", root=str(tmp_path))
+        result = store.set_state("IDEA-001", "bogus", root=str(tmp_path))
+        assert "error" in result
+
+    def test_discard_sets_state_and_records_reason(self, tmp_path):
+        store = _modules["idea_store"]
+        store.add("First idea", root=str(tmp_path))
+        result = store.discard("IDEA-001", reason="duplicate", root=str(tmp_path))
+        assert result["success"] is True
+        shown = store.show("IDEA-001", root=str(tmp_path))
+        assert shown["frontmatter"]["state"] == "discarded"
+        assert "duplicate" in shown["body"]
+
+    def test_discard_promoted_idea_errors(self, tmp_path):
+        store = _modules["idea_store"]
+        store.add("First idea", root=str(tmp_path))
+        store.set_state("IDEA-001", "triaged", root=str(tmp_path))
+        store.set_state("IDEA-001", "planning", root=str(tmp_path))
+        store.set_state("IDEA-001", "planned", root=str(tmp_path))
+        store.promote("IDEA-001", 3, root=str(tmp_path))
+        result = store.discard("IDEA-001", root=str(tmp_path))
+        assert "error" in result
+
+    def test_promote_requires_planned_state(self, tmp_path):
+        store = _modules["idea_store"]
+        store.add("First idea", root=str(tmp_path))
+        result = store.promote("IDEA-001", 3, root=str(tmp_path))
+        assert "error" in result
+        assert "planned" in result["error"]
+
+    def test_promote_success_stamps_epic_num_and_state(self, tmp_path):
+        store = _modules["idea_store"]
+        store.add("First idea", root=str(tmp_path))
+        store.set_state("IDEA-001", "triaged", root=str(tmp_path))
+        store.set_state("IDEA-001", "planning", root=str(tmp_path))
+        store.set_state("IDEA-001", "planned", root=str(tmp_path))
+        result = store.promote("IDEA-001", 3, root=str(tmp_path))
+        assert result["success"] is True
+        assert result["epic"] == "epic-03"
+        shown = store.show("IDEA-001", root=str(tmp_path))
+        assert shown["frontmatter"]["state"] == "promoted"
+        assert shown["frontmatter"]["epic_num"] == "epic-03"
+
+
+# ---------------------------------------------------------------------------
+# 21. idea_plan_check
+# ---------------------------------------------------------------------------
+
+
+VALID_PLAN_MD = """## Stories
+
+- 1 - Add dark mode toggle to settings  [complexity 1, deps: none, type: ui]
+  Acceptance:
+    - Toggle appears in settings panel
+    - Toggling switches theme immediately
+
+- 2 - Persist theme preference  [complexity 1, deps: 1]
+  Acceptance:
+    - Preference survives page reload
+"""
+
+MALFORMED_PLAN_MD = """## Stories
+
+- 1 - Add dark mode toggle to settings  [complexity 1, deps: none, type: ui]
+  Acceptance:
+    - Toggle appears in settings panel
+
+- 2 - Persist theme preference  [complexity 1 deps: 1]
+  Acceptance:
+    - Preference survives page reload
+"""
+
+
+class TestIdeaPlanCheck:
+    def test_parse_valid_stories_section(self):
+        checker = _modules["idea_plan_check"]
+        result = checker.parse_stories_section(VALID_PLAN_MD)
+        assert result["warnings"] == []
+        assert len(result["stories"]) == 2
+        first, second = result["stories"]
+        assert first["seq"] == 1
+        assert first["complexity"] == 1
+        assert first["dependencies"] == []
+        assert first["type"] == "ui"
+        assert first["acceptance"] == [
+            "Toggle appears in settings panel",
+            "Toggling switches theme immediately",
+        ]
+        assert second["dependencies"] == [1]
+
+    def test_missing_stories_section_errors(self):
+        checker = _modules["idea_plan_check"]
+        result = checker.parse_stories_section("## Something Else\n\nno stories here\n")
+        assert "error" in result
+
+    def test_malformed_bracket_surfaces_as_warning_not_silent_drop(self):
+        """A malformed story header must never silently vanish from the parse."""
+        checker = _modules["idea_plan_check"]
+        result = checker.parse_stories_section(MALFORMED_PLAN_MD)
+        assert len(result["stories"]) == 1  # the malformed one did NOT parse as a story
+        assert len(result["warnings"]) == 1  # but it also did NOT vanish silently
+        assert "Persist theme preference" in result["warnings"][0]["text"]
+
+    def test_check_plan_missing_plan_file_errors(self, tmp_path):
+        checker = _modules["idea_plan_check"]
+        store = _modules["idea_store"]
+        store.add("First idea", root=str(tmp_path))
+        result = checker.check_plan("IDEA-001", root=str(tmp_path))
+        assert "error" in result
+
+    def test_check_plan_reports_story_count_and_warnings(self, tmp_path):
+        checker = _modules["idea_plan_check"]
+        store = _modules["idea_store"]
+        store.add("First idea", root=str(tmp_path))
+        plan_path = tmp_path / ".solution-factory" / "ideas" / "IDEA-001" / "plan.md"
+        plan_path.write_text(MALFORMED_PLAN_MD)
+        result = checker.check_plan("IDEA-001", root=str(tmp_path))
+        assert result["story_count"] == 1
+        assert len(result["warnings"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# 22. read_idea_plan
+# ---------------------------------------------------------------------------
+
+
+class TestReadIdeaPlan:
+    def _make_planned_idea(self, tmp_path, plan_text=VALID_PLAN_MD):
+        store = _modules["idea_store"]
+        store.add("First idea", root=str(tmp_path))
+        plan_path = tmp_path / ".solution-factory" / "ideas" / "IDEA-001" / "plan.md"
+        plan_path.write_text(plan_text)
+        store.set_state("IDEA-001", "triaged", root=str(tmp_path))
+        store.set_state("IDEA-001", "planning", root=str(tmp_path))
+        store.set_state("IDEA-001", "planned", root=str(tmp_path))
+
+    def test_fails_when_not_planned(self, tmp_path):
+        reader = _modules["read_idea_plan"]
+        store = _modules["idea_store"]
+        store.add("First idea", root=str(tmp_path))
+        result = reader.read_idea_plan("IDEA-001", root=str(tmp_path))
+        assert "error" in result
+        assert "planned" in result["error"]
+
+    def test_fails_when_plan_has_warnings(self, tmp_path):
+        reader = _modules["read_idea_plan"]
+        self._make_planned_idea(tmp_path, plan_text=MALFORMED_PLAN_MD)
+        result = reader.read_idea_plan("IDEA-001", root=str(tmp_path))
+        assert "error" in result
+        assert "warnings" in result
+
+    def test_fails_when_no_stories_parsed(self, tmp_path):
+        reader = _modules["read_idea_plan"]
+        self._make_planned_idea(tmp_path, plan_text="## Stories\n\nnothing here\n")
+        result = reader.read_idea_plan("IDEA-001", root=str(tmp_path))
+        assert "error" in result
+
+    def test_success_returns_seq_numbered_stories(self, tmp_path):
+        reader = _modules["read_idea_plan"]
+        self._make_planned_idea(tmp_path)
+        result = reader.read_idea_plan("IDEA-001", root=str(tmp_path))
+        assert result["success"] is True
+        assert result["title"] == "First idea"
+        assert [s["seq"] for s in result["stories"]] == [1, 2]
+        assert result["stories"][1]["dependencies"] == [1]

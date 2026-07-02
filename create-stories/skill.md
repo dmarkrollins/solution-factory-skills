@@ -1,6 +1,6 @@
 ---
 description: Break an epic into sequenced, complexity-scored stories with JSON definitions and dependency tracking
-argument-hint: [help | --epic-title="title"]
+argument-hint: [help | --epic-title="title" | --from-idea="IDEA-NNN"]
 allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 ---
 
@@ -16,6 +16,7 @@ Break down a brainstormed epic into sequenced stories stored as JSON files in `.
 
 Parse arguments before doing anything else:
 - `help` → print the reference in **Command: help** below and **STOP**. Do not run any scripts.
+- `--from-idea="IDEA-NNN"` → run the promote-from-idea workflow (Step 3-alt) instead of the interactive Step 3.
 - anything else (or no arguments) → run the create-stories workflow.
 
 ---
@@ -33,6 +34,8 @@ Do not run any scripts. Do not summarize or paraphrase either block.
 USAGE
   /create-stories                      Start a new epic interactively
   /create-stories --epic-title="title" Seed the epic title up front
+  /create-stories --from-idea="IDEA-NNN" Promote a planned idea (from /ideas)
+                                        into a real epic
   /create-stories help                 Show this reference
 
 PREREQUISITES
@@ -82,6 +85,14 @@ KEY PRINCIPLES
   Foundation first    models/schema/core before feature slices
   IDs are numeric     no letter suffixes (01.001, 01.002 — never 01.001a)
   Execution order     array position in sequence.json, NOT numeric sort
+
+PROMOTING FROM AN IDEA
+  --from-idea="IDEA-NNN" skips the interactive drafting steps and translates
+  an idea's approved plan.md (written by /ideas plan) into a real epic
+  instead. The idea must be in state "planned" — /create-stories reads it via
+  read_idea_plan.py, translates its provisional seq numbers into real story
+  IDs, then runs it through the exact same scoring/splitting/validation gates
+  as an interactively-drafted epic. On success the idea is marked promoted.
 
 INSERTION MODE
   If you describe work that belongs in an existing in-progress epic,
@@ -170,9 +181,30 @@ Based on their answer + documentation + existing context:
 
 ---
 
+## Step 3-alt: Promote from an Idea (`--from-idea` only)
+
+Skip Step 3's interview entirely — the idea's `plan.md` already defines scope.
+
+1. Determine `EPIC_NUM`: the next available epic number (same lookup as 3b), unless the request explicitly targets an existing in-progress epic.
+2. ```bash
+   python3 ~/.claude/skills/solution-factory/scripts/read_idea_plan.py <IDEA-NNN> --root .
+   ```
+   This fails fast (non-zero exit) if the idea isn't `planned`, has no `plan.md`, or its Stories section has unresolved parse warnings. Surface the error to the user and **STOP** — do not attempt to work around it or re-parse the plan yourself.
+3. Translate the returned story list: for each story, `seq → EPIC_NUM.NNN` (idea seq `2` promoted into `epic-05` becomes `05.002`), and remap every `dependencies` entry from the old seq to its new `EPIC_NUM.NNN` form in the same pass — a translation bug here would silently produce a story with no dependents blocking it.
+4. Continue at **Step 4a.5** (Enforce the Per-Epic Cap) with the translated story list standing in for a Plan-agent draft. Run **all** of Steps 4a.5, 4a.6, 4b, 4c, 4d, 4e, 4f, and 5a–5f exactly as written for an interactive epic — a hand-written plan can drift out of calibration or miss ADR/constraint/capsule refs just as easily as a live draft, so none of these gates are optional just because the source was `/ideas`.
+5. After Step 5f validation passes, promote the idea as the sole terminal step:
+   ```bash
+   python3 ~/.claude/skills/solution-factory/scripts/idea_store.py promote <IDEA-NNN> --epic-num <N> --root .
+   ```
+   This is the only place anything calls `promote` — `/ideas` never marks its own ideas promoted.
+
+---
+
 ## Step 4: Generate Stories
 
 ### 4a. Draft Stories with Plan Agent
+
+**Skip this step if `--from-idea` was used** — Step 3-alt already produced the translated story list; continue at 4a.5 with that instead.
 
 Use Agent tool with subagent_type=Plan, **model=sonnet** to generate the initial story draft. Provide:
 - Epic theme and objective (from Step 3)
@@ -338,7 +370,7 @@ If validation fails, fix issues and re-validate.
 
 ## Step 6: Present Summary
 
-Display:
+Display (add a `Promoted from: IDEA-NNN` line if this run used `--from-idea`):
 ```
 Epic [NN]: [Title]
 
@@ -399,6 +431,8 @@ The new story gets the **next available ID** (not renumbered). Array position de
 | Duplicate story ID | Error from script, assign different ID |
 | Dependency cycle | Error from validation, fix deps |
 | Draft story's AC restate a dependency's AC (the "test it twin" pattern) | Apply 4a.6 — merge into the dependency or rewrite to target the uncovered gap; never carry forward as a separate story |
+| `--from-idea` on an idea that isn't `planned` | `read_idea_plan.py` fails fast with a specific error — STOP, do not re-parse the plan yourself |
+| `--from-idea` plan has unresolved parse warnings | `read_idea_plan.py` refuses to return stories — tell the user to run `/ideas plan-check` and fix, STOP |
 
 ---
 
