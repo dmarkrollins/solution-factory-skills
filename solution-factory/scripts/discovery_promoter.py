@@ -129,11 +129,13 @@ def promote_discoveries(discoveries, root="."):
     }
 
 
-def confirm_and_promote(discovery, root="."):
-    """Promote a single discovery that was confirmed by user."""
-    # Wrap in list and promote with overridden high score
-    discovery["relevance"] = 10  # Force auto-promote
-    result = promote_discoveries([discovery], root)
+def confirm_and_promote(discoveries, root="."):
+    """Promote all confirmed discoveries (list or single dict), forcing auto-promote."""
+    if isinstance(discoveries, dict):
+        discoveries = [discoveries]
+    for discovery in discoveries:
+        discovery["relevance"] = 10  # Force auto-promote
+    result = promote_discoveries(discoveries, root)
     return result
 
 
@@ -149,7 +151,7 @@ if __name__ == "__main__":
     if args.command == "auto":
         result = promote_discoveries(discoveries, args.root)
     elif args.command == "confirm":
-        result = confirm_and_promote(discoveries[0] if isinstance(discoveries, list) else discoveries, args.root)
+        result = confirm_and_promote(discoveries, args.root)
 
     print(json.dumps(result, indent=2))
     sys.exit(0 if result.get("success") else 1)

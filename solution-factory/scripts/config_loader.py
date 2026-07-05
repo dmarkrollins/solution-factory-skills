@@ -23,7 +23,8 @@ DEFAULTS = {
         "generate_demo_scripts": False,
         "automerge": True,
         "merge_branch": "main",
-        "max_stories_per_epic": 10
+        "max_stories_per_epic": 10,
+        "auto_accept_recommendations": True
     },
     "ux": {
         "wireframe_path": None,

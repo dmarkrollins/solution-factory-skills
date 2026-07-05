@@ -36,6 +36,12 @@
   stories.generate_demo_scripts  Generate demo scripts per story (default: false)
   stories.max_stories_per_epic   Per-epic story cap — scope beyond the cap splits into
                                  sequential epics rather than dropping work (default: 10)
+  stories.auto_accept_recommendations
+                                 In autonomous /solution epic runs, auto-apply the
+                                 Yes/No recommendation for deferred discoveries at
+                                 EPIC-5 instead of asking (default: true). Does not
+                                 affect the interactive /solution complete command,
+                                 which always asks.
   complexity.threshold           Max complexity score per story (default: 3)
                                  Stories over threshold are split — no exceptions
   relevance.auto_create          Discovery relevance score that triggers auto-promotion

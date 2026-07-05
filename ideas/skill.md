@@ -6,7 +6,7 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 
 # Mode of Operation
 
-Own the pre-epic idea backlog: capture a raw idea the moment it occurs to you, triage it later, and when you're ready to act on it, turn it into a story-sized `plan.md` that `/create-stories` can promote straight into a real epic.
+Own the pre-epic idea backlog: capture a raw idea the moment it occurs to you, triage it later, and when you're ready to act on it, turn it into a `plan.md` with a defined technical approach that `/create-stories` can promote straight into a real epic.
 
 **Pipeline position:** `/ideas` (capture → triage → plan) → `/create-stories --from-idea` → `/solution`
 
@@ -26,7 +26,7 @@ Parse arguments to determine subcommand. Default to `list` if no arguments.
 /ideas show <id>           → Show an idea's full detail (and plan, if it has one)
 /ideas discard <id>        → Discard an idea
 /ideas triage              → Review raw ideas one at a time: keep, discard, or merge
-/ideas plan <id>           → Interview + draft a story-sized plan for one idea
+/ideas plan <id>           → Interview + draft a technical-approach plan for one idea
 /ideas plan-check <id>     → Re-run the plan lint standalone
 ```
 
@@ -49,7 +49,7 @@ USAGE
   /ideas show <id>      Show an idea's full detail, including its plan if planned
   /ideas discard <id>   Discard an idea
   /ideas triage         Batch-review raw ideas: keep, discard, or merge
-  /ideas plan <id>      Interview + draft a story-sized plan.md for one idea
+  /ideas plan <id>      Interview + draft a technical-approach plan.md for one idea
   /ideas plan-check <id> Re-run the plan lint standalone (no state change)
   /ideas help           Show this reference
 
@@ -62,11 +62,12 @@ WHAT IT DOES
              idea and discards the source.
   plan       Requires a fully scaffolded .solution-factory/ (run /ideate or
              /bootstrap first if it isn't). Interviews you about the idea,
-             delegates story sizing to the technical-architect agent, then
-             writes the confirmed draft into plan.md's Stories section.
-  plan-check Parses plan.md's Stories section and reports story count plus
-             any malformed/silently-dropped story headers. Pure lint, never
-             blocks — you decide whether to act on warnings.
+             delegates technical-approach drafting to the technical-architect
+             agent (feasibility, design decisions, YAGNI trimming — not
+             stories), then writes the confirmed draft into plan.md's
+             Technical Approach section.
+  plan-check Checks plan.md has a non-empty '## Technical Approach' section.
+             Pure lint, never blocks — you decide whether to act on warnings.
 
 IDEA STATE MACHINE
   raw -> triaged -> planning -> planned -> promoted
@@ -74,17 +75,17 @@ IDEA STATE MACHINE
   Only idea_store.py ever writes idea.md's frontmatter (single writer) —
   /create-stories trusts state == planned without re-checking anything.
 
-PLAN.MD STORIES FORMAT (hand-edited, regex-parseable)
-  ## Stories
+PLAN.MD TECHNICAL APPROACH FORMAT (hand-edited, freeform prose)
+  ## Technical Approach
 
-  - <seq> - <title>  [complexity N, deps: seq,seq|none, type: token]
-    Acceptance:
-      - <ac text>
-      - <ac text>
+  Feasibility notes, what to build (named against real files/patterns in
+  this codebase), what to deliberately leave out (YAGNI), key design
+  decisions, and open risks/questions.
 
-  seq is a small integer local to this idea (1, 2, 3…) — not a final story
-  ID. /create-stories --from-idea translates seq -> EPIC_NUM.NNN and remaps
-  dependencies once the epic number exists.
+  This is NOT a story list — /create-stories --from-idea runs its own
+  Plan-agent drafting step using this section as grounding context, then
+  applies its normal vertical-slicing, complexity-scoring, and dependency-
+  sequencing rubric to produce the actual stories.
 
 NEXT STEP
   /create-stories --from-idea IDEA-NNN   promote a planned idea into a real
@@ -178,20 +179,19 @@ ls .solution-factory/context/capsules/ 2>/dev/null
    ```
 2. Interview the user **one question at a time** about this one idea — problem, scope, constraints specific to it (same discipline as `/ideate` §2, scaled to a single feature, not a whole project). Stop once you can articulate a clear goal and rough scope; don't over-interview a small idea.
 
-## 4. Delegate Sizing to `technical-architect`
+## 4. Delegate Technical Approach to `technical-architect`
 
 Use the Agent tool with `subagent_type=technical-architect`, **model=sonnet**. Provide:
 - Idea title + body (the raw capture)
 - The interview transcript
 - The ADR/constraint/capsule reference inventory (IDs + titles)
-- Complexity threshold from `config.json` (default 3)
 
-The agent returns a feasibility read plus a draft `## Stories` block in the micro-format. It does not write files.
+The agent returns a feasibility read plus a technical approach writeup (what to build, what to leave out per YAGNI, key design decisions, risks/open questions). It does **not** draft stories, assign complexity scores, or write files — that sizing work belongs to `/create-stories --from-idea` later, once the epic exists.
 
 ## 5. Review and Write
 
-1. Review the draft the same way `/create-stories` step 4a reviews the Plan agent's draft — challenge complexity scores, split anything over threshold, confirm dependencies make sense.
-2. Once confirmed with the user, write (or create, if this is the idea's first plan) `.solution-factory/ideas/<id>/plan.md` with the agent's feasibility notes followed by the confirmed `## Stories` block, via the Write/Edit tool. This file stays hand-editable afterward — the user can tweak it directly before promoting.
+1. Review the draft with the user — challenge scope creep, confirm the YAGNI cuts make sense, resolve any flagged risks/open questions you can resolve now.
+2. Once confirmed, write (or create, if this is the idea's first plan) `.solution-factory/ideas/<id>/plan.md` with a `## Technical Approach` section containing the agent's feasibility notes and approach writeup, via the Write/Edit tool. This file stays hand-editable afterward — the user can tweak it directly before promoting.
 
 ## 6. Lint and Confirm
 
@@ -199,12 +199,12 @@ The agent returns a feasibility read plus a draft `## Stories` block in the micr
 python3 ~/.claude/skills/solution-factory/scripts/idea_plan_check.py plan-check <id> --root .
 ```
 
-- Show any `warnings[]` (malformed story headers) and fix them before proceeding — don't let a silently-dropped story reach `/create-stories`.
+- If `warnings[]` is non-empty (section missing or empty) or `technical_approach_present` is `false`, fix `plan.md` before proceeding — `/create-stories --from-idea` needs real content here to ground its own story-drafting step.
 - Once clean, ask the user to confirm the plan is ready.
 3. ```bash
    python3 ~/.claude/skills/solution-factory/scripts/idea_store.py set-state <id> --state planned --root .
    ```
-4. Tell the user: "Ready — run `/create-stories --from-idea <id>` to promote this into an epic."
+4. Tell the user: "Ready — run `/create-stories --from-idea <id>` to promote this into an epic." Note that promotion will run `/create-stories`'s own story-drafting step using this technical approach as context — this plan does not itself contain final stories.
 
 ---
 
@@ -214,7 +214,7 @@ python3 ~/.claude/skills/solution-factory/scripts/idea_plan_check.py plan-check 
 python3 ~/.claude/skills/solution-factory/scripts/idea_plan_check.py plan-check <id> --root .
 ```
 
-Print `story_count`, the parsed stories, and any `warnings[]`. No state change — safe to re-run any time.
+Print `technical_approach_present` and any `warnings[]`. No state change — safe to re-run any time.
 
 ---
 
@@ -225,7 +225,7 @@ Print `story_count`, the parsed stories, and any `warnings[]`. No state change �
 | `add` with no `.solution-factory/` at all | Auto-create `.solution-factory/ideas/` only, proceed normally |
 | `plan` with no `.solution-factory/` (full scaffold) | Tell user to run `/ideate`/`/bootstrap`, STOP |
 | `plan`/`discard` on a `promoted` idea | Error — the idea's epic is the source of truth now |
-| `plan-check` finds malformed story headers | Show as warnings, do not silently drop; fix before `set-state planned` |
+| `plan-check` reports the Technical Approach section missing/empty | Fix `plan.md` before `set-state planned` |
 | `idea_store.py` command errors | Print the error, do not retry blindly |
 
 ---

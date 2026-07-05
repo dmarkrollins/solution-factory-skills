@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Lint an idea's plan.md Stories section.
+Lint an idea's plan.md Technical Approach section.
 
-parse_stories_section() is the single shared parser -- read_idea_plan.py
-imports it rather than keeping a second copy, so the two can never drift
-out of sync. A malformed story header (STORY_HINT matches, STORY_BULLET
-doesn't) is surfaced as a warning instead of silently vanishing from the
-parsed story list.
+parse_technical_approach_section() is the single shared parser --
+read_idea_plan.py imports it rather than keeping a second copy, so the two
+can never drift out of sync. plan.md is freeform prose here (the technical
+approach is a design writeup, not a parseable story list -- story sizing
+happens later, in /create-stories), so the only things worth linting are:
+the section exists, and it isn't empty.
 """
 
 import argparse
@@ -16,17 +17,6 @@ import sys
 from pathlib import Path
 
 import idea_store
-
-# Matches a well-formed story header exactly.
-STORY_BULLET = re.compile(
-    r"^-\s*(?P<seq>\d+)\s*-\s*(?P<title>.+?)\s*"
-    r"\[\s*complexity\s+(?P<complexity>\d+)\s*,\s*deps:\s*(?P<deps>none|[\d,\s]+)"
-    r"(?:\s*,\s*type:\s*(?P<type>[\w-]+))?\s*\]\s*$",
-    re.IGNORECASE,
-)
-
-# Matches anything that *looks like* a story header, well-formed or not.
-STORY_HINT = re.compile(r"^-\s*\d+\s*-\s*")
 
 _HEADING_RE = re.compile(r"^##\s+(.+?)\s*$")
 
@@ -50,77 +40,34 @@ def _find_section(lines, name):
     return start, end
 
 
-def parse_stories_section(text):
-    """Parse the '## Stories' section of a plan.md.
+def parse_technical_approach_section(text):
+    """Parse the '## Technical Approach' section of a plan.md.
 
-    Returns {"stories": [...], "warnings": [...]}. A story dict has: seq
-    (int, provisional and local to the idea), title, complexity,
-    dependencies (list of seq ints), acceptance (list of str), and
-    optional type.
+    Returns {"content": str, "warnings": [...]}. content is the section's
+    raw text (stripped). A missing section is an error (mirrors the old
+    Stories-section-missing case); an empty section is a warning, not an
+    error, since the user may still be drafting it.
     """
     lines = text.splitlines()
-    span = _find_section(lines, "Stories")
+    span = _find_section(lines, "Technical Approach")
     if span is None:
-        return {"stories": [], "warnings": [], "error": "No '## Stories' section found"}
+        return {
+            "content": "",
+            "warnings": [],
+            "error": "No '## Technical Approach' section found",
+        }
 
     start, end = span
-    stories = []
+    content = "\n".join(lines[start:end]).strip()
     warnings = []
-    current = None
+    if not content:
+        warnings.append(
+            {
+                "reason": "'## Technical Approach' section is present but empty",
+            }
+        )
 
-    for lineno in range(start, end):
-        raw_line = lines[lineno]
-        line = raw_line.rstrip()
-        if not line.strip():
-            continue
-
-        stripped = line.lstrip()
-        indent = len(line) - len(stripped)
-
-        if indent == 0 and stripped.startswith("-"):
-            m = STORY_BULLET.match(stripped)
-            if m:
-                deps_raw = m.group("deps").strip()
-                deps = (
-                    []
-                    if deps_raw.lower() == "none"
-                    else [int(d.strip()) for d in deps_raw.split(",") if d.strip()]
-                )
-                current = {
-                    "seq": int(m.group("seq")),
-                    "title": m.group("title").strip(),
-                    "complexity": int(m.group("complexity")),
-                    "dependencies": deps,
-                    "acceptance": [],
-                }
-                if m.group("type"):
-                    current["type"] = m.group("type")
-                stories.append(current)
-            elif STORY_HINT.match(stripped):
-                warnings.append(
-                    {
-                        "line": lineno + 1,
-                        "text": raw_line,
-                        "reason": (
-                            "looks like a story header but does not match the expected "
-                            "'- <seq> - <title>  [complexity N, deps: seq,seq|none, "
-                            "type: token]' format"
-                        ),
-                    }
-                )
-                current = None
-            else:
-                current = None
-            continue
-
-        if current is not None:
-            if re.match(r"^Acceptance:\s*$", stripped, re.IGNORECASE):
-                continue
-            ac_m = re.match(r"^-\s+(.+)$", stripped)
-            if ac_m:
-                current["acceptance"].append(ac_m.group(1).strip())
-
-    return {"stories": stories, "warnings": warnings}
+    return {"content": content, "warnings": warnings}
 
 
 def check_plan(idea_id, root="."):
@@ -128,14 +75,13 @@ def check_plan(idea_id, root="."):
     if not plan_path.exists():
         return {"error": f"No plan.md found for {idea_id}"}
 
-    parsed = parse_stories_section(plan_path.read_text())
+    parsed = parse_technical_approach_section(plan_path.read_text())
     if "error" in parsed:
         return parsed
 
     return {
         "idea": idea_id,
-        "story_count": len(parsed["stories"]),
-        "stories": parsed["stories"],
+        "technical_approach_present": bool(parsed["content"]),
         "warnings": parsed["warnings"],
     }
 

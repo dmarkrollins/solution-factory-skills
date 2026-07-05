@@ -87,12 +87,15 @@ KEY PRINCIPLES
   Execution order     array position in sequence.json, NOT numeric sort
 
 PROMOTING FROM AN IDEA
-  --from-idea="IDEA-NNN" skips the interactive drafting steps and translates
-  an idea's approved plan.md (written by /ideas plan) into a real epic
-  instead. The idea must be in state "planned" — /create-stories reads it via
-  read_idea_plan.py, translates its provisional seq numbers into real story
-  IDs, then runs it through the exact same scoring/splitting/validation gates
-  as an interactively-drafted epic. On success the idea is marked promoted.
+  --from-idea="IDEA-NNN" skips Step 3's interview and uses an idea's approved
+  plan.md (written by /ideas plan) as grounding context instead. The idea
+  must be in state "planned" — /create-stories reads its title, body, and
+  Technical Approach writeup via read_idea_plan.py, then runs its own normal
+  Plan-agent story-drafting step (4a) using that context in place of a fresh
+  interview, followed by the exact same splitting/scoring/validation gates as
+  an interactively-drafted epic. The idea's plan.md is a technical approach,
+  not a pre-made story list — story sizing still happens here, in
+  /create-stories, same as always. On success the idea is marked promoted.
 
 INSERTION MODE
   If you describe work that belongs in an existing in-progress epic,
@@ -183,15 +186,15 @@ Based on their answer + documentation + existing context:
 
 ## Step 3-alt: Promote from an Idea (`--from-idea` only)
 
-Skip Step 3's interview entirely — the idea's `plan.md` already defines scope.
+Skip Step 3's interview — the idea's `plan.md` already defines the problem, scope, and technical approach; use it as the interview transcript's replacement, not as a finished story list.
 
 1. Determine `EPIC_NUM`: the next available epic number (same lookup as 3b), unless the request explicitly targets an existing in-progress epic.
 2. ```bash
    python3 ~/.claude/skills/solution-factory/scripts/read_idea_plan.py <IDEA-NNN> --root .
    ```
-   This fails fast (non-zero exit) if the idea isn't `planned`, has no `plan.md`, or its Stories section has unresolved parse warnings. Surface the error to the user and **STOP** — do not attempt to work around it or re-parse the plan yourself.
-3. Translate the returned story list: for each story, `seq → EPIC_NUM.NNN` (idea seq `2` promoted into `epic-05` becomes `05.002`), and remap every `dependencies` entry from the old seq to its new `EPIC_NUM.NNN` form in the same pass — a translation bug here would silently produce a story with no dependents blocking it.
-4. Continue at **Step 4a.5** (Enforce the Per-Epic Cap) with the translated story list standing in for a Plan-agent draft. Run **all** of Steps 4a.5, 4a.6, 4b, 4c, 4d, 4e, 4f, and 5a–5f exactly as written for an interactive epic — a hand-written plan can drift out of calibration or miss ADR/constraint/capsule refs just as easily as a live draft, so none of these gates are optional just because the source was `/ideas`.
+   This fails fast (non-zero exit) if the idea isn't `planned`, has no `plan.md`, or its Technical Approach section is missing/empty. Surface the error to the user and **STOP** — do not attempt to work around it or draft stories from the bare idea title alone.
+3. Carry the returned `title`, `body`, and `technical_approach` forward as the epic theme/objective input to **Step 4a** — in place of what an interactive Step 3 would have produced, not instead of running 4a.
+4. Continue at **Step 4a** (Draft Stories with Plan Agent) — do **not** skip it. Run it and every step after it (4a.5, 4a.6, 4b, 4c, 4d, 4e, 4f, 5a–5f) exactly as written for an interactively-drafted epic; the idea's technical approach is additional grounding for the Plan agent, not a substitute for its own vertical-slicing and complexity-scoring pass.
 5. After Step 5f validation passes, promote the idea as the sole terminal step:
    ```bash
    python3 ~/.claude/skills/solution-factory/scripts/idea_store.py promote <IDEA-NNN> --epic-num <N> --root .
@@ -204,10 +207,8 @@ Skip Step 3's interview entirely — the idea's `plan.md` already defines scope.
 
 ### 4a. Draft Stories with Plan Agent
 
-**Skip this step if `--from-idea` was used** — Step 3-alt already produced the translated story list; continue at 4a.5 with that instead.
-
 Use Agent tool with subagent_type=Plan, **model=sonnet** to generate the initial story draft. Provide:
-- Epic theme and objective (from Step 3)
+- Epic theme and objective (from Step 3 interactively, or from the idea's `title` + `body` + `technical_approach` when `--from-idea` was used — pass the technical approach through verbatim so the Plan agent drafts against its stated design decisions and YAGNI cuts rather than re-deriving them)
 - Full ADR and constraint reference inventory (IDs + titles from Step 2)
 - Existing epic count and the next epic number
 - Complexity threshold (from config.json, default 3)
@@ -431,8 +432,8 @@ The new story gets the **next available ID** (not renumbered). Array position de
 | Duplicate story ID | Error from script, assign different ID |
 | Dependency cycle | Error from validation, fix deps |
 | Draft story's AC restate a dependency's AC (the "test it twin" pattern) | Apply 4a.6 — merge into the dependency or rewrite to target the uncovered gap; never carry forward as a separate story |
-| `--from-idea` on an idea that isn't `planned` | `read_idea_plan.py` fails fast with a specific error — STOP, do not re-parse the plan yourself |
-| `--from-idea` plan has unresolved parse warnings | `read_idea_plan.py` refuses to return stories — tell the user to run `/ideas plan-check` and fix, STOP |
+| `--from-idea` on an idea that isn't `planned` | `read_idea_plan.py` fails fast with a specific error — STOP, do not work around it |
+| `--from-idea` plan has a missing/empty Technical Approach section | `read_idea_plan.py` refuses to return context — tell the user to run `/ideas plan-check` and fix, STOP |
 
 ---
 

@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-Translate an approved idea's plan.md into the story-dict list create-stories
-already knows how to consume (same shape the Plan agent drafts in its own
-step 4a). Hard-fails if the idea isn't in the 'planned' state, and if the
-plan has any unresolved parse warnings -- a translation bug here would
-otherwise silently produce a story with no dependents blocking it.
+Read an approved idea's plan.md into the context shape create-stories needs
+to run its own Plan-agent story-drafting step (4a) with the idea's technical
+approach as grounding, instead of drafting from a bare idea title/body.
 
-seq numbers stay provisional (local to the idea) here; create-stories itself
-does seq -> EPIC_NUM.NNN translation and dependency remapping, since that's
-epic-numbering logic that belongs to create-stories's own workflow.
+Hard-fails if the idea isn't in the 'planned' state, has no plan.md, or its
+'## Technical Approach' section is missing/empty -- create-stories should
+never silently draft stories against an idea nobody finished designing.
+
+Story sizing itself (vertical slicing, complexity scoring, dependency
+sequencing) is NOT done here -- that's create-stories's own step 4a, run
+against the context this returns. This script's only job is handing over
+what /ideas plan produced: the idea's title, raw body, and technical
+approach writeup.
 """
 
 import argparse
@@ -16,7 +20,7 @@ import json
 import sys
 
 import idea_store
-from idea_plan_check import parse_stories_section
+from idea_plan_check import parse_technical_approach_section
 
 
 def read_idea_plan(idea_id, root="."):
@@ -37,27 +41,25 @@ def read_idea_plan(idea_id, root="."):
     if not plan_path.exists():
         return {"error": f"Idea {idea_id} has no plan.md"}
 
-    parsed = parse_stories_section(plan_path.read_text())
+    parsed = parse_technical_approach_section(plan_path.read_text())
     if "error" in parsed:
         return parsed
 
-    if parsed["warnings"]:
+    if parsed["warnings"] or not parsed["content"]:
         return {
             "error": (
-                f"plan.md for {idea_id} has {len(parsed['warnings'])} malformed "
-                "story header(s) -- run /ideas plan-check and fix before promoting."
+                f"plan.md for {idea_id} has no usable '## Technical Approach' "
+                "content -- run /ideas plan-check and fix before promoting."
             ),
             "warnings": parsed["warnings"],
         }
-
-    if not parsed["stories"]:
-        return {"error": f"plan.md for {idea_id} has no stories in its '## Stories' section"}
 
     return {
         "success": True,
         "idea": idea_id,
         "title": idea["frontmatter"].get("title", ""),
-        "stories": parsed["stories"],
+        "body": idea["body"].strip(),
+        "technical_approach": parsed["content"],
     }
 
 

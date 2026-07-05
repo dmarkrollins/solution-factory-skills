@@ -226,6 +226,11 @@ class TestConfigLoader:
         assert result["config"]["stories"]["merge_branch"] == "main"
         assert result["config"]["stories"]["automerge"] is False
 
+    def test_auto_accept_recommendations_defaults_true(self, proj):
+        loader = _modules["config_loader"]
+        result = loader.load_config(root=str(proj))
+        assert result["config"]["stories"]["auto_accept_recommendations"] is True
+
 
 # ---------------------------------------------------------------------------
 # 2. scaffold_structure
@@ -1848,59 +1853,38 @@ class TestIdeaStore:
 # ---------------------------------------------------------------------------
 
 
-VALID_PLAN_MD = """## Stories
+VALID_PLAN_MD = """## Technical Approach
 
-- 1 - Add dark mode toggle to settings  [complexity 1, deps: none, type: ui]
-  Acceptance:
-    - Toggle appears in settings panel
-    - Toggling switches theme immediately
-
-- 2 - Persist theme preference  [complexity 1, deps: 1]
-  Acceptance:
-    - Preference survives page reload
+Reuse the existing upload pipeline; add a bounded-concurrency queue in the
+frontend. Leave configurability of the concurrency cap out of scope (YAGNI)
+until real-volume testing suggests otherwise.
 """
 
-MALFORMED_PLAN_MD = """## Stories
+EMPTY_SECTION_PLAN_MD = """## Technical Approach
 
-- 1 - Add dark mode toggle to settings  [complexity 1, deps: none, type: ui]
-  Acceptance:
-    - Toggle appears in settings panel
-
-- 2 - Persist theme preference  [complexity 1 deps: 1]
-  Acceptance:
-    - Preference survives page reload
 """
 
 
 class TestIdeaPlanCheck:
-    def test_parse_valid_stories_section(self):
+    def test_parse_valid_technical_approach_section(self):
         checker = _modules["idea_plan_check"]
-        result = checker.parse_stories_section(VALID_PLAN_MD)
+        result = checker.parse_technical_approach_section(VALID_PLAN_MD)
         assert result["warnings"] == []
-        assert len(result["stories"]) == 2
-        first, second = result["stories"]
-        assert first["seq"] == 1
-        assert first["complexity"] == 1
-        assert first["dependencies"] == []
-        assert first["type"] == "ui"
-        assert first["acceptance"] == [
-            "Toggle appears in settings panel",
-            "Toggling switches theme immediately",
-        ]
-        assert second["dependencies"] == [1]
+        assert "bounded-concurrency queue" in result["content"]
 
-    def test_missing_stories_section_errors(self):
+    def test_missing_technical_approach_section_errors(self):
         checker = _modules["idea_plan_check"]
-        result = checker.parse_stories_section("## Something Else\n\nno stories here\n")
+        result = checker.parse_technical_approach_section(
+            "## Something Else\n\nno approach here\n"
+        )
         assert "error" in result
 
-    def test_malformed_bracket_surfaces_as_warning_not_silent_drop(self):
-        """A malformed story header must never silently vanish from the parse."""
+    def test_empty_section_surfaces_as_warning_not_silent_pass(self):
+        """An empty Technical Approach section must never silently pass."""
         checker = _modules["idea_plan_check"]
-        result = checker.parse_stories_section(MALFORMED_PLAN_MD)
-        assert len(result["stories"]) == 1  # the malformed one did NOT parse as a story
-        assert len(result["warnings"]) == 1  # but it also did NOT vanish silently
-        assert "Persist theme preference" in result["warnings"][0]["text"]
+        result = checker.parse_technical_approach_section(EMPTY_SECTION_PLAN_MD)
+        assert result["content"] == ""
+        assert len(result["warnings"]) == 1
 
     def test_check_plan_missing_plan_file_errors(self, tmp_path):
         checker = _modules["idea_plan_check"]
@@ -1909,15 +1893,25 @@ class TestIdeaPlanCheck:
         result = checker.check_plan("IDEA-001", root=str(tmp_path))
         assert "error" in result
 
-    def test_check_plan_reports_story_count_and_warnings(self, tmp_path):
+    def test_check_plan_reports_presence_and_warnings(self, tmp_path):
         checker = _modules["idea_plan_check"]
         store = _modules["idea_store"]
         store.add("First idea", root=str(tmp_path))
         plan_path = tmp_path / ".solution-factory" / "ideas" / "IDEA-001" / "plan.md"
-        plan_path.write_text(MALFORMED_PLAN_MD)
+        plan_path.write_text(EMPTY_SECTION_PLAN_MD)
         result = checker.check_plan("IDEA-001", root=str(tmp_path))
-        assert result["story_count"] == 1
+        assert result["technical_approach_present"] is False
         assert len(result["warnings"]) == 1
+
+    def test_check_plan_clean_when_populated(self, tmp_path):
+        checker = _modules["idea_plan_check"]
+        store = _modules["idea_store"]
+        store.add("First idea", root=str(tmp_path))
+        plan_path = tmp_path / ".solution-factory" / "ideas" / "IDEA-001" / "plan.md"
+        plan_path.write_text(VALID_PLAN_MD)
+        result = checker.check_plan("IDEA-001", root=str(tmp_path))
+        assert result["technical_approach_present"] is True
+        assert result["warnings"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -1943,24 +1937,24 @@ class TestReadIdeaPlan:
         assert "error" in result
         assert "planned" in result["error"]
 
-    def test_fails_when_plan_has_warnings(self, tmp_path):
+    def test_fails_when_section_empty(self, tmp_path):
         reader = _modules["read_idea_plan"]
-        self._make_planned_idea(tmp_path, plan_text=MALFORMED_PLAN_MD)
+        self._make_planned_idea(tmp_path, plan_text=EMPTY_SECTION_PLAN_MD)
         result = reader.read_idea_plan("IDEA-001", root=str(tmp_path))
         assert "error" in result
         assert "warnings" in result
 
-    def test_fails_when_no_stories_parsed(self, tmp_path):
+    def test_fails_when_section_missing(self, tmp_path):
         reader = _modules["read_idea_plan"]
-        self._make_planned_idea(tmp_path, plan_text="## Stories\n\nnothing here\n")
+        self._make_planned_idea(tmp_path, plan_text="## Something Else\n\nnothing here\n")
         result = reader.read_idea_plan("IDEA-001", root=str(tmp_path))
         assert "error" in result
 
-    def test_success_returns_seq_numbered_stories(self, tmp_path):
+    def test_success_returns_title_body_and_technical_approach(self, tmp_path):
         reader = _modules["read_idea_plan"]
         self._make_planned_idea(tmp_path)
         result = reader.read_idea_plan("IDEA-001", root=str(tmp_path))
         assert result["success"] is True
         assert result["title"] == "First idea"
-        assert [s["seq"] for s in result["stories"]] == [1, 2]
-        assert result["stories"][1]["dependencies"] == [1]
+        assert "body" in result
+        assert "bounded-concurrency queue" in result["technical_approach"]

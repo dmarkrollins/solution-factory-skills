@@ -267,7 +267,8 @@ Infer configuration from the codebase analysis and write `.solution-factory/conf
         "generate_demo_scripts": false,
         "automerge": true,
         "merge_branch": "main",
-        "max_stories_per_epic": 10
+        "max_stories_per_epic": 10,
+        "auto_accept_recommendations": true
     },
     "ux": {
         "wireframe_path": null,

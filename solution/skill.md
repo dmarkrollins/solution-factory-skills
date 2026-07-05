@@ -645,7 +645,7 @@ Tell user: **"Run `/solution complete [ID]` when ready."**
      --discoveries '[...]'
    ```
 
-   For items needing confirmation → present to user one at a time with a **Recommendation: Yes / No** and a one-sentence reason based on the discovery's breadth of applicability and relevance score. Ask yes/no.
+   For items needing confirmation → present to user one at a time with a **Recommendation: Yes / No** and a one-sentence reason based on the discovery's breadth of applicability and relevance score. Ask yes/no. This is an interactive command — always ask here regardless of `stories.auto_accept_recommendations` (that config only affects the deferred-discovery gate in autonomous `/solution epic` runs; see EPIC-5).
    For confirmed items:
    ```bash
    python3 ~/.claude/skills/solution-factory/scripts/discovery_promoter.py confirm \
@@ -815,7 +815,7 @@ cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory
 
 Determine the active config (used in the manifest and by every worker):
 ```bash
-cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/config_loader.py . | python3 -c "import sys,json; c=json.load(sys.stdin)['config']['stories']; print('automerge=%s demo_scripts=%s require_tests=%s merge_branch=%s' % (c.get('automerge',True), c.get('generate_demo_scripts',False), c.get('require_tests',True), c.get('merge_branch','main')))"
+cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/config_loader.py . | python3 -c "import sys,json; c=json.load(sys.stdin)['config']['stories']; print('automerge=%s demo_scripts=%s require_tests=%s merge_branch=%s auto_accept_recommendations=%s' % (c.get('automerge',True), c.get('generate_demo_scripts',False), c.get('require_tests',True), c.get('merge_branch','main'), c.get('auto_accept_recommendations',True)))"
 ```
 Capture `MERGE_BRANCH` from the output for use throughout the epic run.
 
@@ -830,7 +830,7 @@ Autonomous run — [EPIC_ID]: [Epic title]
 Stories to execute (sequence order):
   [ID]  [Title]   complexity [N]   deps: [list|none]
   ...
-Config: automerge=[..] · demo_scripts=[..] · require_tests=[..] · merge_branch=[..]
+Config: automerge=[..] · demo_scripts=[..] · require_tests=[..] · merge_branch=[..] · auto_accept_recommendations=[..]
 Merges: [auto | review each merge (--review-merges)]
 
 Run all [N] ready stories autonomously? (yes / no)
@@ -847,6 +847,33 @@ Run all [N] ready stories autonomously? (yes / no)
 ## EPIC-3: Orchestration loop
 
 Maintain a ledger in the main thread: `[{id, title, result, note}]`. Repeat:
+
+0. **Verify the last completed story actually merged.** A `done` story folder
+   only means `story_completer.py complete` ran (steps 1–8/11–12 of `complete`)
+   — it does NOT guarantee step 9 (the git merge) executed, since a pause/
+   interrupt can land between the two. Check every `done` story in this epic for
+   a leftover, unmerged feature branch:
+   ```bash
+   cd $(git rev-parse --show-toplevel) && for d in .solution-factory/epics/[EPIC_ID]/stories/done/*/; do
+     id=$(basename "$d")
+     branch=$(git branch --list "feature/${id}-*" | sed 's/^[* ] //')
+     if [ -n "$branch" ] && ! git merge-base --is-ancestor "$branch" [MERGE_BRANCH] 2>/dev/null; then
+       echo "UNMERGED: $id -> $branch"
+     fi
+   done
+   ```
+   For every `UNMERGED` line → finish the merge before doing anything else this
+   iteration, honoring `REVIEW_MERGES` exactly as EPIC-4c step 9 would (preview +
+   approval at EPIC-3a if `true`; immediate merge if `false`):
+   ```bash
+   cd $(git rev-parse --show-toplevel) && git checkout [MERGE_BRANCH] \
+     && git merge --no-ff [branch] -m "Merge story [id]: [title]" \
+     && git branch -d [branch]
+   ```
+   This is the backstop for the exact failure mode where `/solution stop` (or an
+   Escape-interrupt that skips it) lands between the completion-artifact commit
+   and the merge — it makes the orchestration loop self-healing on every
+   resume/iteration instead of trusting that the previous run finished cleanly.
 
 1. **Resolve the next ready story IN THIS EPIC:**
    ```bash
@@ -1061,9 +1088,22 @@ Done: [X]/[N]   Blocked: [Y]   Remaining backlog: [Z]
 ```
 
 **Deferred discoveries** (collected by the orchestrator during each story's
-EPIC-4c completion): present each one at a time with a **Recommendation: Yes / No** and a one-sentence reason based on the discovery's breadth of applicability and relevance score, ask yes/no, and for confirmed
-items run (same strict JSON schema as the `complete` command step 4 — `content`
-field, not `body`; `source_story` required):
+EPIC-4c completion): for each one, determine a **Recommendation: Yes / No** and
+a one-sentence reason based on the discovery's breadth of applicability and
+relevance score.
+
+- **If `stories.auto_accept_recommendations` is `true`** (the default) → do
+  NOT ask the user. Apply the recommendation automatically — `Yes` → promote
+  it (run `confirm` below), `No` → discard it, no script call needed. Log one
+  compact line per item in the final summary instead of a per-item prompt,
+  e.g. `→ [title]: auto-accepted (Yes) — [reason]` or
+  `→ [title]: auto-discarded (No) — [reason]`.
+- **If `false`** → present each one at a time to the user with its
+  Recommendation and reason, and wait for yes/no as before.
+
+For promoted items (confirmed by the user, or auto-accepted as `Yes`) run
+(same strict JSON schema as the `complete` command step 4 — `content` field,
+not `body`; `source_story` required):
 ```bash
 cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/discovery_promoter.py confirm --discoveries '[...]'
 ```
