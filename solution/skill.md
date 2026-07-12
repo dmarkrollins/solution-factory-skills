@@ -40,6 +40,7 @@ Never assume the cwd is correct after running package-level commands (e.g. `npm 
 /solution stop         → Pause an active epic run; state saved to epic JSON
 /solution epic <id>    → Autonomously run all ready stories in an epic
 /solution epic <id> --review-merges → Same, but pause for approval before each merge
+/solution epic all     → Autonomously run every ready epic, in sequence order, back to back
 ```
 
 > **Interactive vs autonomous:** `next`/`start`/`resume`/`complete` are the
@@ -73,6 +74,8 @@ WORKING A SINGLE STORY (interactive — you approve the plan, answer questions):
 RUNNING A WHOLE EPIC (autonomous — one confirmation, then unattended):
   /solution epic <id>                  Run every ready backlog story in the epic
   /solution epic <id> --review-merges  Same, but pause for yes/no before each merge
+  /solution epic all                   Run every ready epic, in sequence order, back to back
+                                        (always automerges — no --review-merges in this mode)
   /solution stop                       Pause the active epic run; resume later with /solution next
 
 SEEING WHERE THINGS STAND:
@@ -96,6 +99,12 @@ INTERACTIVE vs AUTONOMOUS
   config — the on-demand equivalent of automerge=false. Only the merge is gated;
   everything else still runs unattended.
 
+  `epic all` chains this same engine across every epic that has ready stories,
+  in sequence order, with a single upfront confirmation covering the whole
+  cross-epic run. No new "epic readiness" concept — it just keeps asking for
+  the next ready story globally instead of stopping at one epic's backlog. A
+  blocker anywhere stops the ENTIRE run, not just the current epic.
+
 STOP / RESUME AN EPIC RUN
   Hit Escape to interrupt, then:
     /solution stop     saves run state to the epic JSON (via epic_run_manager.py)
@@ -108,9 +117,16 @@ STOP / RESUME AN EPIC RUN
     status: active | stopped | complete
     current_story, review_merges, started_at, stopped_at
 
+  `epic all` reuses this same per-epic run block — it doesn't add its own
+  tracking file. If interrupted, /solution next resumes whichever epic was
+  active; once that epic finishes you need to re-run `/solution epic all` to
+  keep going into the next ready epic (it won't auto-chain past an
+  interruption on its own).
+
 TYPICAL FLOW
   /solution status          see what's ready
-  /solution epic epic-03    run the epic unattended
+  /solution epic epic-03    run one epic unattended
+  /solution epic all        run every ready epic, back to back
   /solution stop            pause mid-epic; close Claude
   /solution next            resume where you left off
 ```
@@ -645,7 +661,9 @@ Tell user: **"Run `/solution complete [ID]` when ready."**
      --discoveries '[...]'
    ```
 
-   For items needing confirmation → present to user one at a time with a **Recommendation: Yes / No** and a one-sentence reason based on the discovery's breadth of applicability and relevance score. Ask yes/no. This is an interactive command — always ask here regardless of `stories.auto_accept_recommendations` (that config only affects the deferred-discovery gate in autonomous `/solution epic` runs; see EPIC-5).
+   For items needing confirmation → present to user one at a time with a **Recommendation: Yes / No** and a one-sentence reason based on the discovery's breadth of applicability and relevance score. Ask yes/no.
+
+   > **Scope of this rule:** this ask-every-time behavior applies ONLY when a human directly invoked `/solution complete <id>` — that is inherently an interactive command. **If you are executing this step as part of EPIC-4c (autonomous epic run), IGNORE this instruction entirely.** Do not ask here, do not re-read this paragraph as license to ask. Follow EPIC-4c's own step 4 instead, which auto-promotes/discards/defers without ever asking mid-loop, and only surfaces deferred items at EPIC-5 under the `auto_accept_recommendations` gate.
    For confirmed items:
    ```bash
    python3 ~/.claude/skills/solution-factory/scripts/discovery_promoter.py confirm \
@@ -794,8 +812,26 @@ author≠reviewer independence, while the orchestrator's own context stays light
 > orchestrator owns review + completion. This is what makes autonomous mode the
 > equivalent of interactive mode rather than a degraded inline-everything version.
 
-Parse the epic id from arguments (e.g. `epic-03`). If none is given, run
-`get_status.py` and ask the user which epic to run (one question).
+> **The only-two-gates rule:** once EPIC-2's pre-flight confirmation is
+> answered `yes`, this loop pauses for a human reply at exactly one further
+> point — EPIC-3a's per-merge review, and ONLY when `--review-merges` was
+> passed. Nothing else in Phases 1–5, the `complete` logic, or discovery
+> promotion may block on a response. In particular: when
+> `stories.auto_accept_recommendations` is `true`, every recommendation
+> (discoveries, and any other place this skill computes a Yes/No
+> recommendation) is applied immediately and only logged — never asked. If
+> you find yourself about to output a question mid-loop outside these two
+> named gates, that is a bug in how you're executing this skill: stop, find
+> the applicable override in EPIC-4/4b/4c, and apply it instead of asking.
+
+Parse the target from arguments:
+- The literal word `all` → **ALL_MODE = true**. Run every epic with ready
+  stories, in sequence order, back to back. See the "ALL_MODE" callouts
+  throughout EPIC-1 through EPIC-5 for how each step adapts.
+- A specific epic id (e.g. `epic-03`) → **ALL_MODE = false**, scoped to that
+  one epic (existing behavior, unchanged).
+- Nothing given → run `get_status.py` and ask the user which epic to run, or
+  whether to run `all` (one question).
 
 **Flags:**
 - `--review-merges` — pause before every story's merge and show the user exactly
@@ -803,43 +839,81 @@ Parse the epic id from arguments (e.g. `epic-03`). If none is given, run
   on-demand equivalent of `automerge=false` for a single run; everything else
   stays autonomous (planning, implementation, tests, review all run unattended —
   only the merge is gated). Without this flag the run merges automatically (the
-  user opted into autonomy by entering epic mode).
+  user opted into autonomy by entering epic mode). **Not valid with `all`** — if
+  both are given, tell the user `epic all` always automerges (run individual
+  epics with `epic <id> --review-merges` if you want per-merge approval) and stop.
 
 Capture `REVIEW_MERGES = true|false` from the flag and thread it to every worker.
+In ALL_MODE, `REVIEW_MERGES` is always `false`.
 
 ## EPIC-1: Build the run manifest
 
-```bash
-cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/story_resolver.py list --epic [EPIC_ID]
-```
+- **Single-epic mode:**
+  ```bash
+  cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/story_resolver.py list --epic [EPIC_ID]
+  ```
+  If the epic has no `backlog` stories → report "Nothing to run in [EPIC_ID]" and STOP.
 
-Determine the active config (used in the manifest and by every worker):
+- **ALL_MODE:**
+  ```bash
+  cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/story_resolver.py list
+  ```
+  No `--epic` filter — this returns every story across every epic. Group the
+  `backlog` and `active` entries by their `epic` field, preserving sequence.json
+  array order (both across epics and within each epic). This is the whole
+  manifest; no separate "which epics are ready" step exists — an epic is
+  implicitly in scope the moment one of its stories is ready or active.
+  If there are zero `backlog`/`active` stories anywhere → report "Nothing to
+  run — no epic has ready stories" and STOP.
+
+Determine the active config (used in the manifest and by every worker — global,
+not per-epic, so this runs once regardless of mode):
 ```bash
 cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/config_loader.py . | python3 -c "import sys,json; c=json.load(sys.stdin)['config']['stories']; print('automerge=%s demo_scripts=%s require_tests=%s merge_branch=%s auto_accept_recommendations=%s' % (c.get('automerge',True), c.get('generate_demo_scripts',False), c.get('require_tests',True), c.get('merge_branch','main'), c.get('auto_accept_recommendations',True)))"
 ```
-Capture `MERGE_BRANCH` from the output for use throughout the epic run.
-
-If the epic has no `backlog` stories → report "Nothing to run in [EPIC_ID]" and STOP.
+Capture `MERGE_BRANCH` from the output for use throughout the run.
 
 ## EPIC-2: Pre-flight confirmation (the ONLY human gate)
 
-Present the manifest and the config, then **wait for one yes/no**:
+Present the manifest and the config, then **wait for one yes/no**.
 
-```
-Autonomous run — [EPIC_ID]: [Epic title]
-Stories to execute (sequence order):
-  [ID]  [Title]   complexity [N]   deps: [list|none]
-  ...
-Config: automerge=[..] · demo_scripts=[..] · require_tests=[..] · merge_branch=[..] · auto_accept_recommendations=[..]
-Merges: [auto | review each merge (--review-merges)]
+- **Single-epic mode:**
+  ```
+  Autonomous run — [EPIC_ID]: [Epic title]
+  Stories to execute (sequence order):
+    [ID]  [Title]   complexity [N]   deps: [list|none]
+    ...
+  Config: automerge=[..] · demo_scripts=[..] · require_tests=[..] · merge_branch=[..] · auto_accept_recommendations=[..]
+  Merges: [auto | review each merge (--review-merges)]
 
-Run all [N] ready stories autonomously? (yes / no)
-```
+  Run all [N] ready stories autonomously? (yes / no)
+  ```
+
+- **ALL_MODE** — one confirmation for the whole cross-epic run, manifest grouped
+  by epic in sequence order:
+  ```
+  Autonomous run — ALL READY EPICS
+  [EPIC_ID_1]: [Epic title]
+    [ID]  [Title]   complexity [N]   deps: [list|none]
+    ...
+  [EPIC_ID_2]: [Epic title]
+    [ID]  [Title]   complexity [N]   deps: [list|none]
+    ...
+  Config: automerge=[..] · demo_scripts=[..] · require_tests=[..] · merge_branch=[..] · auto_accept_recommendations=[..]
+  Merges: auto (epic all always automerges)
+
+  Run all [N] ready stories across [M] epics autonomously? (yes / no)
+  ```
 
 - If **no** → STOP.
-- If **yes** → write the `run` block to the epic JSON, then proceed to the loop.
-  Do not ask anything else until the run ends or a story blocks.
+- If **yes** → proceed to the loop. Do not ask anything else until the run ends
+  or a story blocks. The `run` block on the epic JSON is written per-epic as
+  the loop enters each epic (EPIC-3 step 1a) rather than all upfront, since in
+  ALL_MODE the full list of epics that will actually be touched isn't fixed in
+  advance — later epics' stories only become ready as earlier ones complete
+  their dependencies.
 
+  Single-epic mode writes it here, immediately:
   ```bash
   cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py start --epic [EPIC_ID] [--review-merges] --root .
   ```
@@ -851,10 +925,13 @@ Maintain a ledger in the main thread: `[{id, title, result, note}]`. Repeat:
 0. **Verify the last completed story actually merged.** A `done` story folder
    only means `story_completer.py complete` ran (steps 1–8/11–12 of `complete`)
    — it does NOT guarantee step 9 (the git merge) executed, since a pause/
-   interrupt can land between the two. Check every `done` story in this epic for
-   a leftover, unmerged feature branch:
+   interrupt can land between the two. Check for a leftover, unmerged feature
+   branch among `done` stories — scoped to `[EPIC_ID]` in single-epic mode, or
+   across every epic (`.solution-factory/epics/*/stories/done/*/`) in ALL_MODE,
+   since an earlier epic in this same run could be the one with the dangling
+   merge:
    ```bash
-   cd $(git rev-parse --show-toplevel) && for d in .solution-factory/epics/[EPIC_ID]/stories/done/*/; do
+   cd $(git rev-parse --show-toplevel) && for d in .solution-factory/epics/[EPIC_ID or *]/stories/done/*/; do
      id=$(basename "$d")
      branch=$(git branch --list "feature/${id}-*" | sed 's/^[* ] //')
      if [ -n "$branch" ] && ! git merge-base --is-ancestor "$branch" [MERGE_BRANCH] 2>/dev/null; then
@@ -864,7 +941,8 @@ Maintain a ledger in the main thread: `[{id, title, result, note}]`. Repeat:
    ```
    For every `UNMERGED` line → finish the merge before doing anything else this
    iteration, honoring `REVIEW_MERGES` exactly as EPIC-4c step 9 would (preview +
-   approval at EPIC-3a if `true`; immediate merge if `false`):
+   approval at EPIC-3a if `true`; immediate merge if `false` — in ALL_MODE this
+   is always `false`):
    ```bash
    cd $(git rev-parse --show-toplevel) && git checkout [MERGE_BRANCH] \
      && git merge --no-ff [branch] -m "Merge story [id]: [title]" \
@@ -875,12 +953,42 @@ Maintain a ledger in the main thread: `[{id, title, result, note}]`. Repeat:
    and the merge — it makes the orchestration loop self-healing on every
    resume/iteration instead of trusting that the previous run finished cleanly.
 
-1. **Resolve the next ready story IN THIS EPIC:**
-   ```bash
-   cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/story_resolver.py next --epic [EPIC_ID]
-   ```
+1. **Resolve the next ready story:**
+   - Single-epic mode:
+     ```bash
+     cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/story_resolver.py next --epic [EPIC_ID]
+     ```
+   - ALL_MODE — no `--epic` filter, so this naturally walks every epic's stories
+     in sequence.json order, honoring cross-epic dependencies exactly as `next`
+     already does outside epic mode:
+     ```bash
+     cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/story_resolver.py next
+     ```
+     Read `epic_id` off the result as `CURRENT_EPIC_ID` — every `[EPIC_ID]`
+     placeholder in the remaining steps for this iteration means `CURRENT_EPIC_ID`.
+
+1a. **(ALL_MODE only) Epic-transition bookkeeping.** If `CURRENT_EPIC_ID` differs
+    from the epic the loop was in on the previous iteration (or this is the
+    first iteration), that's an epic boundary:
+    - If there was a previous epic in this run, close its run block so a later
+      `find` never mistakes it for a stalled/paused run:
+      ```bash
+      cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py complete --epic [PREVIOUS_EPIC_ID] --root .
+      ```
+    - Print a banner: `▶▶ Entering [CURRENT_EPIC_ID]: [Epic title]`
+    - Start the run block on the new epic's own JSON (reuses the exact same
+      per-epic tracking single-epic mode uses — no separate ALL_MODE state file):
+      ```bash
+      cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py start --epic [CURRENT_EPIC_ID] --root .
+      ```
+    (Sequence.json's own epic `status` field flips to `completed` separately,
+    via the existing `complete` step 12 logic — this bookkeeping only concerns
+    the pause/resume `run` block, not that field.)
+
 2. **Branch on status:**
-   - `status: "complete"` → epic backlog exhausted → go to EPIC-5 (final summary).
+   - `status: "complete"` → single-epic mode: this epic's backlog exhausted →
+     go to EPIC-5. ALL_MODE: no ready or active story anywhere → every epic's
+     backlog is exhausted → go to EPIC-5 (final summary).
    - `status: "active"` → a story is mid-flight (e.g. a prior interrupted run).
      Hand it to a worker in **resume** mode (see worker contract).
    - `status: "ready"` → hand it to a worker in **start** mode.
@@ -910,6 +1018,8 @@ worker's internal exploration, diffs, or test output:
 ```
 ▶ [ID] [Title] … [DONE | MERGE_PENDING | BLOCKED]  ([one-line note])
 ```
+In ALL_MODE, prefix with the epic id so the transcript stays readable across
+epic boundaries: `▶ [CURRENT_EPIC_ID]/[ID] [Title] … [DONE | MERGE_PENDING | BLOCKED]  ([one-line note])`
 
 ### EPIC-3a: Merge review (only when `--review-merges` is set)
 
@@ -1048,9 +1158,15 @@ command** logic from the main thread (the worker did NOT do this):
   `validate_completion` + `check_plan_complete` checks regardless.
 - Step 4: read `local.md` and **auto-promote** discoveries at/above the
   `auto_create` relevance threshold; **discard** those at/below `auto_discard`;
-  collect in-between items into the run's deferred list for EPIC-5. Use the
-  same strict JSON schema as the `complete` command step 4 (`content` field,
-  not `body`; `source_story` required) — see that section for the exact shape.
+  collect in-between items into the run's deferred list for EPIC-5. **Never ask
+  the user here, under any circumstance** — mid-tier items are only collected,
+  never presented, during this step. Build each discovery as JSON with exactly
+  these field names (the script raises `KeyError` otherwise): `title`,
+  `content` (not `body`/`description`), `type` (`decision` | `constraint`),
+  `relevance` (1-10), `source_story` (required). Run:
+  ```bash
+  cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/discovery_promoter.py auto --discoveries '[...]'
+  ```
 - Steps 5–8, 11–12: regenerate capsules if needed, flip story status to `done`,
   commit `.solution-factory/` artifacts, run the epic-complete check.
 - **Step 9 (merge) — honor `REVIEW_MERGES`:**
@@ -1067,7 +1183,10 @@ status") and stop.
 
 ## EPIC-5: Final summary
 
-Mark the run complete (or stopped if blocked) in the epic JSON:
+Mark the run complete (or stopped if blocked) in the epic JSON. In ALL_MODE
+this applies to whichever epic was `CURRENT_EPIC_ID` when the loop stopped —
+every earlier epic in the run was already closed out by step 1a's
+epic-transition bookkeeping, so only the last one is still open:
 ```bash
 # On clean finish:
 cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py complete --epic [EPIC_ID] --root .
@@ -1077,7 +1196,7 @@ git add .solution-factory/epics/[EPIC_ID]/[EPIC_ID].json
 git commit -m "Finalize epic [EPIC_ID] run status"
 ```
 
-Print a table and next steps:
+Print a table and next steps. Single-epic mode:
 ```
 Autonomous run complete — [EPIC_ID]
   ✓ [ID] [Title]
@@ -1087,16 +1206,31 @@ Autonomous run complete — [EPIC_ID]
 Done: [X]/[N]   Blocked: [Y]   Remaining backlog: [Z]
 ```
 
+ALL_MODE — group the same ledger by epic instead:
+```
+Autonomous run complete — ALL EPICS
+[EPIC_ID_1]: [Epic title]
+  ✓ [ID] [Title]
+  ✓ [ID] [Title]
+[EPIC_ID_2]: [Epic title]
+  ✓ [ID] [Title]
+  ✗ [ID] [Title] — BLOCKED: [reason]   (if any, and only in the epic where the run stopped)
+
+Done: [X]/[N] stories across [K] epics   Blocked: [Y]   Remaining backlog: [Z]
+```
+
 **Deferred discoveries** (collected by the orchestrator during each story's
 EPIC-4c completion): for each one, determine a **Recommendation: Yes / No** and
 a one-sentence reason based on the discovery's breadth of applicability and
 relevance score.
 
-- **If `stories.auto_accept_recommendations` is `true`** (the default) → do
-  NOT ask the user. Apply the recommendation automatically — `Yes` → promote
-  it (run `confirm` below), `No` → discard it, no script call needed. Log one
-  compact line per item in the final summary instead of a per-item prompt,
-  e.g. `→ [title]: auto-accepted (Yes) — [reason]` or
+- **If `stories.auto_accept_recommendations` is `true`** (the default) → you
+  MUST NOT output a question or wait for a reply for these items — that would
+  pause an autonomous run for a decision the config already made. Apply the
+  recommendation automatically — `Yes` → promote it (run `confirm` below),
+  `No` → discard it, no script call needed. Log one compact line per item in
+  the final summary instead of a per-item prompt, e.g.
+  `→ [title]: auto-accepted (Yes) — [reason]` or
   `→ [title]: auto-discarded (No) — [reason]`.
 - **If `false`** → present each one at a time to the user with its
   Recommendation and reason, and wait for yes/no as before.
@@ -1115,16 +1249,23 @@ cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory
 **If a story blocked:** show its `BLOCKER` text and offer 2–3 options (e.g. answer
 the open question and re-run `/solution epic [EPIC_ID]`; split the story via
 `/create-stories`; or implement it interactively with `/solution start [ID]`).
+In ALL_MODE, the blocker stops the entire cross-epic run, not just the epic it
+occurred in — any later epics that were queued but not yet reached are left
+untouched, exactly as they were before the run started.
 
 **If the epic is fully done**, the last story's EPIC-4c completion already flipped
 the epic to `completed` (complete step 12). Confirm and suggest `/create-stories`
-for the next epic.
+for the next epic. In ALL_MODE, if every epic that had ready/active stories is
+now `completed`, say so explicitly (e.g. "All ready epics complete").
 
 ## Epic-runner rules
 
 - **Sequential only** — never run stories in parallel (dependencies + shared git
-  history). One worker at a time.
-- **Stop on first blocker** — predictable over "maximize throughput."
+  history), and in ALL_MODE never run two epics in parallel either — one story,
+  in one epic, at a time, across the whole run.
+- **Stop on first blocker** — predictable over "maximize throughput." In
+  ALL_MODE this means the first blocker anywhere halts the whole run, not just
+  the epic it happened in.
 - **Split of duties** — the worker owns implementation + testing (its heavy
   exploration/diff context dies with it); the orchestrator owns the independent
   review/security/docs gauntlet and completion, holding only the ledger and
