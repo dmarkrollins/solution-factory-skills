@@ -719,6 +719,105 @@ class TestValidateStories:
         assert result["valid"] is True
         assert result["stories_checked"] == 1
 
+    # -- cross-epic dependency resolution ----------------------------------
+    #
+    # Dependencies are GLOBAL story IDs and epics run sequentially, so a story
+    # in epic-NN+1 may legitimately depend on one in epic-NN -- /create-stories
+    # sanctions this explicitly, and it happens routinely whenever an epic is
+    # split at the story cap. The bug these cover: --epic filtered the epic
+    # list first, then resolved every dependency against that same filtered
+    # list, so a cross-epic dependency could never resolve.
+
+    def _two_epics(self, proj, epic_01_stories, epic_02_stories):
+        """Scaffold two epics. Stories are (story_id, dependencies) tuples.
+
+        epic-01 is added to sequence.json before epic-02, so every story in
+        epic-01 precedes every story in epic-02 in global execution order.
+        """
+        gs = _modules["generate_sequence"]
+        scaffold = _modules["scaffold_structure"]
+        scaffold.create_epic(1, root=str(proj))
+        scaffold.create_epic(2, root=str(proj))
+        gs.add_epic("epic-01", root=str(proj))
+        gs.add_epic("epic-02", root=str(proj))
+        for epic_id, stories in (
+            ("epic-01", epic_01_stories),
+            ("epic-02", epic_02_stories),
+        ):
+            for story_id, deps in stories:
+                write_story_yaml(proj, epic_id, story_id, "backlog")
+                gs.add_story(epic_id, story_id, dependencies=deps, root=str(proj))
+
+    def test_cross_epic_dependency_on_earlier_epic_passes_when_scoped(self, proj):
+        """A dependency living in an EARLIER epic must resolve even when only
+        the later epic is under validation -- this is the regression."""
+        self._two_epics(proj, [("01.001", [])], [("02.001", ["01.001"])])
+        vs = _modules["validate_stories"]
+        result = vs.validate(epic_id="epic-02", root=str(proj))
+        assert result["valid"] is True
+        assert result["errors"] == []
+
+    def test_cross_epic_dependency_on_earlier_epic_passes_unscoped(self, proj):
+        """The same sequence validated whole must also pass."""
+        self._two_epics(proj, [("01.001", [])], [("02.001", ["01.001"])])
+        vs = _modules["validate_stories"]
+        result = vs.validate(root=str(proj))
+        assert result["valid"] is True
+        assert result["errors"] == []
+
+    def test_cross_epic_forward_reference_still_fails(self, proj):
+        """A dependency on a LATER epic is still a forward reference. Accepting
+        cross-epic deps must not degrade into accepting every cross-epic dep."""
+        self._two_epics(proj, [("01.001", ["02.001"])], [("02.001", [])])
+        vs = _modules["validate_stories"]
+        result = vs.validate(epic_id="epic-01", root=str(proj))
+        assert result["valid"] is False
+        assert any("forward" in e.lower() for e in result["errors"])
+
+    def test_unknown_dependency_still_fails_when_epic_scoped(self, proj):
+        """A dependency in no epic at all is still unknown, not cross-epic."""
+        self._two_epics(proj, [("01.001", [])], [("02.001", ["99.999"])])
+        vs = _modules["validate_stories"]
+        result = vs.validate(epic_id="epic-02", root=str(proj))
+        assert result["valid"] is False
+        assert any("unknown" in e.lower() for e in result["errors"])
+
+    def test_intra_epic_forward_reference_still_fails_when_scoped(self, proj):
+        """Within one epic, depending on a later story is still a forward ref."""
+        self._two_epics(
+            proj, [("01.001", [])], [("02.001", ["02.002"]), ("02.002", [])]
+        )
+        vs = _modules["validate_stories"]
+        result = vs.validate(epic_id="epic-02", root=str(proj))
+        assert result["valid"] is False
+        assert any("forward" in e.lower() for e in result["errors"])
+
+    def test_epic_scoped_run_does_not_report_other_epic_errors(self, proj):
+        """Resolving against the global order must not widen REPORTING scope:
+        epic-01's broken dependency belongs to epic-01's own validation run."""
+        self._two_epics(proj, [("01.001", ["99.999"])], [("02.001", ["01.001"])])
+        vs = _modules["validate_stories"]
+
+        scoped = vs.validate(epic_id="epic-02", root=str(proj))
+        assert scoped["valid"] is True
+        assert scoped["errors"] == []
+
+        # ...but a whole-sequence run still surfaces it.
+        full = vs.validate(root=str(proj))
+        assert full["valid"] is False
+        assert any("unknown" in e.lower() for e in full["errors"])
+
+    def test_cycle_spanning_epic_boundary_detected_when_scoped(self, proj):
+        """Cycle detection builds its graph from ALL epics, so a cycle crossing
+        an epic boundary is traversable while validating just one epic. Before
+        the fix the graph was built from the filtered list and the traversal
+        dead-ended at the epic boundary."""
+        self._two_epics(proj, [("01.001", ["02.001"])], [("02.001", ["01.001"])])
+        vs = _modules["validate_stories"]
+        result = vs.validate(epic_id="epic-01", root=str(proj))
+        assert result["valid"] is False
+        assert any("cycle" in e.lower() for e in result["errors"])
+
 
 # ---------------------------------------------------------------------------
 # 7. story_activator
