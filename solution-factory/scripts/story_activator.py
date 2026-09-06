@@ -36,8 +36,16 @@ def activate_story(story_id, epic_id, root="."):
             return {"success": True, "message": f"Story {story_id} already active", "already_active": True}
         return {"error": f"Story {story_id} not found in backlog for {epic_id}"}
 
-    # Move folder
+    # Move folder. shutil.move() nests src *inside* dst if dst already exists
+    # as a directory (even an empty one) instead of renaming -- guard against
+    # that by clearing an empty pre-existing active_dir first, so a stray
+    # `mkdir` (e.g. from exploratory tooling) can't silently produce a
+    # doubly-nested active/{id}/{id}/ path.
     active_dir.parent.mkdir(parents=True, exist_ok=True)
+    if active_dir.exists():
+        if any(active_dir.iterdir()):
+            return {"error": f"Cannot activate {story_id}: {active_dir} already exists and is non-empty"}
+        active_dir.rmdir()
     shutil.move(str(backlog_dir), str(active_dir))
 
     # Sync sequence.json status in the same call -- no orchestration gap for

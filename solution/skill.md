@@ -1,6 +1,6 @@
 ---
 description: Implement stories with structured planning, mandatory gates, discovery tracking, and incremental delivery
-argument-hint: <status|next|list|start|resume|complete|rollback|plan|epic> [story-id|epic-id]
+argument-hint: <status|next|list|start|resume|complete|rollback|plan|epic|consolidate> [story-id|epic-id]
 allowed-tools: [Read, Glob, Grep, Bash, Edit, Write, Task]
 ---
 
@@ -41,6 +41,7 @@ Never assume the cwd is correct after running package-level commands (e.g. `npm 
 /solution epic <id>    → Autonomously run all ready stories in an epic
 /solution epic <id> --review-merges → Same, but pause for approval before each merge
 /solution epic all     → Autonomously run every ready epic, in sequence order, back to back
+/solution consolidate  → Review existing decisions/constraints for overlap and merge duplicates
 ```
 
 > **Interactive vs autonomous:** `next`/`start`/`resume`/`complete` are the
@@ -638,6 +639,18 @@ Tell user: **"Run `/solution complete [ID]` when ready."**
 
 4. **Process discoveries from local.md:**
 
+   **4.0 Check for consolidation before scoring — mandatory, do this first:**
+   ```bash
+   python3 ~/.claude/skills/solution-factory/scripts/discovery_promoter.py list --root .
+   ```
+   This lists every existing decision/constraint as `{id, type, title, path}` — titles only, so
+   it's cheap even on a project with dozens of them. For each discovery in `local.md`, check it
+   against this list *before* assigning a relevance score. If a discovery clearly extends,
+   corrects, or restates an existing decision/constraint (same topic, same subsystem, a
+   follow-up on something already tracked), it must **amend** that entry rather than become a
+   new file — this is the fix for constraint/decision sprawl, so do not skip it or treat it as
+   optional. Only genuinely new topics get `action: "new"`.
+
    Read `local.md` from the active story folder. For each discovery:
    - Assess relevance score (1-10) based on how broadly applicable it is
    - Prepare JSON array of scored discoveries using **exactly these field names** (the script raises `KeyError` otherwise):
@@ -649,22 +662,42 @@ Tell user: **"Run `/solution complete [ID]` when ready."**
        "content": "Full explanation of the discovery",
        "type": "decision | constraint",
        "relevance": 8,
-       "source_story": "04.001"
+       "source_story": "04.001",
+       "action": "new",
+       "target_id": null
+     },
+     {
+       "title": "Updated title reflecting the current understanding",
+       "content": "What changed or was confirmed about the existing entry",
+       "type": "constraint",
+       "relevance": 8,
+       "source_story": "04.001",
+       "action": "amend",
+       "target_id": "const-012"
      }
    ]
    ```
 
    > **Field names are strict:** use `content` (not `body`/`description`), and always include `source_story`.
+   > `action`/`target_id` are optional — omit both (or use `"action": "new"`) for a genuinely new
+   > decision/constraint. Set `"action": "amend"` with the matching `target_id` from step 4.0's
+   > list when consolidating into an existing entry. An amend updates that file's title, its
+   > tracking metadata, and its `## Context` section to the current understanding, leaving every
+   > other section untouched — it refines one finding, it does not regenerate the file, and it
+   > does not append a history log; git already keeps that.
 
    ```bash
    python3 ~/.claude/skills/solution-factory/scripts/discovery_promoter.py auto \
      --discoveries '[...]'
    ```
+   Check the result's `amended` list alongside `promoted` — amended items consolidated into an
+   existing file and did not create anything new.
 
    For items needing confirmation → present to user one at a time with a **Recommendation: Yes / No** and a one-sentence reason based on the discovery's breadth of applicability and relevance score. Ask yes/no.
 
    > **Scope of this rule:** this ask-every-time behavior applies ONLY when a human directly invoked `/solution complete <id>` — that is inherently an interactive command. **If you are executing this step as part of EPIC-4c (autonomous epic run), IGNORE this instruction entirely.** Do not ask here, do not re-read this paragraph as license to ask. Follow EPIC-4c's own step 4 instead, which auto-promotes/discards/defers without ever asking mid-loop, and only surfaces deferred items at EPIC-5 under the `auto_accept_recommendations` gate.
-   For confirmed items:
+   For confirmed items — carry the same `action`/`target_id` fields through from the
+   `needs_confirmation` entry (an amend stays an amend after confirmation):
    ```bash
    python3 ~/.claude/skills/solution-factory/scripts/discovery_promoter.py confirm \
      --discoveries '[...]'
@@ -740,6 +773,90 @@ This single call moves the story folder back to `active/` **and** syncs its
 so folder location and status can't drift.
 
 Inform user the story is reopened and active.
+
+---
+
+# Command: consolidate
+
+Backward cleanup for decisions/constraints that were already created as
+near-duplicates or overlapping sprawl before consolidation existed (or that
+slipped through despite it). This is always interactive — merge grouping is a
+judgment call worth a human skim, never run it inside an autonomous epic loop.
+
+1. **List everything:**
+   ```bash
+   cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/discovery_promoter.py list --root .
+   ```
+
+2. **Propose merge groups in one pass, covering BOTH decisions AND constraints
+   with equal rigor.** Step 1's `list` output already interleaves `adr-*` and
+   `const-*` entries — that's deliberate, not incidental. **Do not scan the
+   list once for constraint sprawl and call it done; make a second, explicit
+   pass over the `adr-*` entries alone before presenting anything.** Decision
+   sprawl looks different from constraint sprawl (a superseded technology
+   choice never updated when it changed, a stale "current state" ADR left
+   describing what used to be true, an ADR that only ever recorded a
+   scoping/finding note for one story rather than a durable architectural
+   decision) and is easy to skip past if you're pattern-matching on constraint
+   examples alone. Read through the titles (pull full content for any group
+   you're unsure about) and group entries that cover the same topic/subsystem
+   within each type — e.g. five separate Chakra-UI testing-quirk *constraints*
+   that belong in one reference file, **or an ADR recording a now-replaced
+   library/routing/testing choice that should be corrected or cross-referenced
+   against whatever superseded it**, or a constraint plus a later discovery
+   that was mistakenly created as a sibling file instead of an amendment to
+   it. Do not propose merging entries that are only loosely related (same
+   capsule topic bucket is not sufficient — capsule topics are broad keyword
+   buckets, not a duplicate signal), and never merge a decision into a
+   constraint or vice versa — they record different kinds of knowledge even
+   when they share a topic; cross-reference them in the merged content instead
+   (e.g. "implements adr-028"). **State explicitly in the presented batch that
+   both types were checked** (e.g. "Decisions: no sprawl found" when a pass
+   over `adr-*` turns up nothing) rather than silently presenting only
+   constraint groups — that's the only way the user can tell decisions were
+   actually reviewed rather than skipped.
+
+3. **Present the full batch of proposed groups at once** — not one at a time:
+   ```
+   Proposed consolidation (N groups):
+
+   1. [target-id]: [proposed merged title]
+      merges: [id] [title], [id] [title], [id] [title]
+      reason: [why these are the same topic]
+
+   2. ...
+   ```
+   Wait for one approval covering the whole batch (the user may accept some
+   groups and reject others — apply only what's approved).
+
+4. **For each approved group**, draft the merged markdown (same format as
+   `discovery_promoter.py` produces — the `# id: title` header, the `**Key:**`
+   metadata block, then `## Context` / `## Decision` / `## Consequences`; that
+   convention is shared by decisions and constraints alike) covering the union
+   of what the sources said,
+   with anything genuinely redundant collapsed. Pick the lowest (oldest) ID in
+   the group as `target`, then:
+   ```bash
+   cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/discovery_promoter.py merge \
+     --root . --sources '["const-045","const-046","const-050"]' --target const-045 --content '[merged markdown]'
+   ```
+   Every source other than `target` is reduced to a one-line `Superseded by`
+   stub — file stays in place (old references from `done/` story JSON still
+   resolve) but the content lives in one file.
+
+5. **Regenerate capsules:**
+   ```bash
+   cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/capsule_generator.py
+   ```
+
+6. **Commit:**
+   ```bash
+   git add .solution-factory/
+   git commit -m "Consolidate overlapping decisions/constraints"
+   ```
+
+7. Report a summary table: groups merged, files reduced to stubs, net file
+   count before/after.
 
 ---
 
@@ -1156,14 +1273,24 @@ command** logic from the main thread (the worker did NOT do this):
   already-green Tier 2, so the re-run is a guaranteed-pass repeat — **skip it and
   trust the worker's recorded `tier2=pass`**. Always run the cheap
   `validate_completion` + `check_plan_complete` checks regardless.
-- Step 4: read `local.md` and **auto-promote** discoveries at/above the
-  `auto_create` relevance threshold; **discard** those at/below `auto_discard`;
-  collect in-between items into the run's deferred list for EPIC-5. **Never ask
-  the user here, under any circumstance** — mid-tier items are only collected,
-  never presented, during this step. Build each discovery as JSON with exactly
-  these field names (the script raises `KeyError` otherwise): `title`,
-  `content` (not `body`/`description`), `type` (`decision` | `constraint`),
-  `relevance` (1-10), `source_story` (required). Run:
+- Step 4: **first run the same consolidation check as `complete` step 4.0** —
+  `discovery_promoter.py list --root .` — and compare each `local.md` discovery
+  against existing titles before scoring. This is a deterministic judgment call
+  (does this discovery extend/restate something already tracked?), not a
+  question for the user, so it runs unchanged inside the autonomous loop: mark
+  matches `"action": "amend"` with the matching `target_id`, everything else
+  `"action": "new"`. Then read `local.md` and **auto-promote** discoveries
+  at/above the `auto_create` relevance threshold (amends update the existing
+  file in place instead of creating a new one — check the result's `amended`
+  list); **discard** those at/below `auto_discard`; collect in-between items
+  into the run's deferred list for EPIC-5, keeping their `action`/`target_id` so
+  a later `confirm` still consolidates correctly. **Never ask the user here,
+  under any circumstance** — mid-tier items are only collected, never
+  presented, during this step. Build each discovery as JSON with exactly these
+  field names (the script raises `KeyError` otherwise): `title`, `content` (not
+  `body`/`description`), `type` (`decision` | `constraint`), `relevance`
+  (1-10), `source_story` (required), plus `action`/`target_id` per the
+  consolidation check above. Run:
   ```bash
   cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/discovery_promoter.py auto --discoveries '[...]'
   ```
@@ -1237,7 +1364,9 @@ relevance score.
 
 For promoted items (confirmed by the user, or auto-accepted as `Yes`) run
 (same strict JSON schema as the `complete` command step 4 — `content` field,
-not `body`; `source_story` required):
+not `body`; `source_story` required; keep whatever `action`/`target_id` EPIC-4c
+step 4 already assigned to each item — an item flagged as an amend at
+collection time must still amend, not spawn a new file, when confirmed here):
 ```bash
 cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/discovery_promoter.py confirm --discoveries '[...]'
 ```

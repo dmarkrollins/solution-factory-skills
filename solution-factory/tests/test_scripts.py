@@ -935,6 +935,76 @@ class TestStoryActivator:
         story = read_seq(proj)["epics"][0]["stories"][0]
         assert story["status"] == "active"
 
+    # -- pre-existing active/ directory ------------------------------------
+    #
+    # shutil.move(src, dst) RENAMES when dst does not exist, but moves src
+    # *inside* dst when dst is an existing directory -- even an empty one. So a
+    # stray `mkdir` of active/{id}/ turns activation into a silent
+    # active/{id}/{id}/ nesting rather than an error.
+
+    def _backlog_story(self, proj, story_id="01.001", epic_id="epic-01"):
+        gs = _modules["generate_sequence"]
+        scaffold = _modules["scaffold_structure"]
+        gs.add_epic(epic_id, root=str(proj))
+        gs.add_story(epic_id, story_id, root=str(proj))
+        scaffold.create_epic(1, root=str(proj))
+        write_story_yaml(proj, epic_id, story_id, "backlog")
+        return proj / ".solution-factory" / "epics" / epic_id / "stories"
+
+    def test_activate_over_empty_active_dir_does_not_nest(self, proj):
+        """An empty pre-existing active/{id}/ must be cleared, not moved into:
+        the story's files land directly in active/{id}/, never active/{id}/{id}/."""
+        stories = self._backlog_story(proj)
+        active_dir = stories / "active" / "01.001"
+        active_dir.mkdir(parents=True)  # stray empty dir, e.g. from tooling
+
+        sa = _modules["story_activator"]
+        result = sa.activate_story("01.001", "epic-01", root=str(proj))
+        assert result["success"] is True
+
+        assert (active_dir / "01.001.json").exists()
+        assert (active_dir / "local.md").exists()
+        assert not (active_dir / "01.001").exists()  # the nesting bug
+        assert not (stories / "backlog" / "01.001").exists()
+
+    def test_activate_over_empty_active_dir_still_syncs_sequence(self, proj):
+        """Clearing the stray directory must not skip the status sync."""
+        stories = self._backlog_story(proj)
+        (stories / "active" / "01.001").mkdir(parents=True)
+
+        sa = _modules["story_activator"]
+        assert sa.activate_story("01.001", "epic-01", root=str(proj))["success"] is True
+        assert read_seq(proj)["epics"][0]["stories"][0]["status"] == "active"
+
+    def test_activate_over_nonempty_active_dir_errors(self, proj):
+        """Story present in BOTH backlog and active is a split-brain state.
+        Refuse -- do not clobber the active copy and do not nest into it."""
+        stories = self._backlog_story(proj)
+        active_dir = stories / "active" / "01.001"
+        active_dir.mkdir(parents=True)
+        (active_dir / "local.md").write_text("work in progress")
+
+        sa = _modules["story_activator"]
+        result = sa.activate_story("01.001", "epic-01", root=str(proj))
+        assert "error" in result
+        assert "non-empty" in result["error"]
+
+        # Nothing moved, nothing overwritten.
+        assert (active_dir / "local.md").read_text() == "work in progress"
+        assert (stories / "backlog" / "01.001" / "01.001.json").exists()
+        assert not (active_dir / "01.001").exists()
+
+    def test_activate_over_nonempty_active_dir_leaves_status_untouched(self, proj):
+        """A refused activation must not flip sequence.json to active."""
+        stories = self._backlog_story(proj)
+        active_dir = stories / "active" / "01.001"
+        active_dir.mkdir(parents=True)
+        (active_dir / "local.md").write_text("work in progress")
+
+        sa = _modules["story_activator"]
+        assert "error" in sa.activate_story("01.001", "epic-01", root=str(proj))
+        assert read_seq(proj)["epics"][0]["stories"][0]["status"] == "backlog"
+
 
 # ---------------------------------------------------------------------------
 # 8. story_completer
@@ -1268,6 +1338,422 @@ class TestDiscoveryPromoter:
         assert len(result["promoted"]) == 1
         assert len(result["needs_confirmation"]) == 1
         assert len(result["discarded"]) == 1
+
+    # -- list_existing -----------------------------------------------------
+
+    def test_list_existing_empty(self, proj):
+        dp = _modules["discovery_promoter"]
+        result = dp.list_existing(root=str(proj))
+        assert result["success"] is True
+        assert result["items"] == []
+
+    def test_list_existing_returns_id_type_title(self, proj):
+        dp = _modules["discovery_promoter"]
+        dp.promote_discoveries([self._discovery(10, "constraint")], root=str(proj))
+        result = dp.list_existing(root=str(proj))
+        assert len(result["items"]) == 1
+        item = result["items"][0]
+        assert item["id"] == "const-001"
+        assert item["type"] == "constraint"
+        assert item["title"] == "Use Redis for caching"
+        assert item["path"].endswith("const-001.md")
+
+    def test_list_existing_includes_decisions_and_constraints(self, proj):
+        dp = _modules["discovery_promoter"]
+        dp.promote_discoveries([self._discovery(10, "decision")], root=str(proj))
+        dp.promote_discoveries([self._discovery(10, "constraint")], root=str(proj))
+        result = dp.list_existing(root=str(proj))
+        types = {item["type"] for item in result["items"]}
+        assert types == {"decision", "constraint"}
+
+    # -- amend (consolidation) ----------------------------------------------
+
+    def test_amend_updates_existing_file_no_new_id(self, proj):
+        dp = _modules["discovery_promoter"]
+        first = dp.promote_discoveries([self._discovery(10, "constraint")], root=str(proj))
+        target_id = first["promoted"][0]["id"]
+
+        amend_disc = self._discovery(9, "constraint")
+        amend_disc["title"] = "Redis eviction policy must be noeviction"
+        amend_disc["content"] = "Follow-up: cache must use noeviction to avoid silent data loss."
+        amend_disc["action"] = "amend"
+        amend_disc["target_id"] = target_id
+
+        result = dp.promote_discoveries([amend_disc], root=str(proj))
+        assert result["success"] is True
+        assert len(result["promoted"]) == 0
+        assert len(result["amended"]) == 1
+        assert result["amended"][0]["id"] == target_id
+
+        constraints_dir = proj / ".solution-factory" / "constraints"
+        files = sorted(constraints_dir.glob("const-*.md"))
+        assert len(files) == 1  # no new file created
+
+        content = files[0].read_text()
+        assert "noeviction" in content
+        assert "Redis eviction policy must be noeviction" in content
+
+    def test_amend_rewrites_cleanly_no_accumulated_history(self, proj):
+        """Amending replaces the body rather than appending — file stays current, not a log."""
+        dp = _modules["discovery_promoter"]
+        first = dp.promote_discoveries([self._discovery(10, "constraint")], root=str(proj))
+        target_id = first["promoted"][0]["id"]
+        original_content = Path(first["promoted"][0]["path"]).read_text()
+
+        amend_disc = self._discovery(9, "constraint")
+        amend_disc["content"] = "Updated understanding of the caching constraint."
+        amend_disc["action"] = "amend"
+        amend_disc["target_id"] = target_id
+        dp.promote_discoveries([amend_disc], root=str(proj))
+
+        new_content = Path(first["promoted"][0]["path"]).read_text()
+        assert "Redis provides fast in-memory caching" not in new_content
+        assert "Updated understanding of the caching constraint." in new_content
+        assert new_content != original_content
+
+    def test_amend_falls_back_to_new_when_target_missing(self, proj):
+        dp = _modules["discovery_promoter"]
+        disc = self._discovery(9, "constraint")
+        disc["action"] = "amend"
+        disc["target_id"] = "const-999"  # does not exist
+
+        result = dp.promote_discoveries([disc], root=str(proj))
+        assert len(result["amended"]) == 0
+        assert len(result["promoted"]) == 1
+        assert result["promoted"][0]["id"] == "const-001"
+
+    def test_amend_in_prompt_range_carries_target_id(self, proj):
+        dp = _modules["discovery_promoter"]
+        disc = self._discovery(6, "constraint")  # prompt range
+        disc["action"] = "amend"
+        disc["target_id"] = "const-001"
+        result = dp.promote_discoveries([disc], root=str(proj))
+        assert len(result["needs_confirmation"]) == 1
+        assert result["needs_confirmation"][0]["action"] == "amend"
+        assert result["needs_confirmation"][0]["target_id"] == "const-001"
+
+    def test_confirm_and_promote_respects_amend(self, proj):
+        dp = _modules["discovery_promoter"]
+        first = dp.promote_discoveries([self._discovery(10, "constraint")], root=str(proj))
+        target_id = first["promoted"][0]["id"]
+
+        disc = self._discovery(3, "constraint")  # would normally be discarded
+        disc["action"] = "amend"
+        disc["target_id"] = target_id
+        result = dp.confirm_and_promote(disc, root=str(proj))
+        assert result["success"] is True
+        assert len(result["amended"]) == 1
+        assert len(result["promoted"]) == 0
+
+    # -- amend preserves the target file ------------------------------------
+    #
+    # An amend refines ONE finding. It is not a regeneration: the target may
+    # hold hundreds of lines of hand-maintained detail the discovery knows
+    # nothing about. Regression -- amend rewrote the file from a template
+    # seeded only with disc["content"], turning a 405-line constraint into 15
+    # lines of placeholder comments.
+
+    def _rich_constraint(self, proj, cid="const-001", detail_lines=400):
+        """Write a substantial existing constraint in the repo's conventional
+        Status/Context/Decision/Consequences shape."""
+        d = proj / ".solution-factory" / "constraints"
+        d.mkdir(parents=True, exist_ok=True)
+        detail = "\n".join(f"line {i} of hard-won detail" for i in range(1, detail_lines + 1))
+        f = d / f"{cid}.md"
+        f.write_text(
+            f"# {cid}: API rate limits\n\n"
+            "**Status:** Accepted\n"
+            "**Type:** technology\n"
+            "**Date:** 2020-01-01\n"
+            "**Source:** Story 01.001\n"
+            "**Relevance Score:** 8\n\n"
+            "## Context\nThe original context.\n\n"
+            "## Decision\nThe decision we reached after a long argument.\n\n"
+            f"## Consequences\n{detail}\n"
+        )
+        return f
+
+    def _amendment(self, target_id="const-001", content="Refined: limit is 300 rpm."):
+        disc = self._discovery(10, "constraint")
+        disc["title"] = "API rate limits"
+        disc["content"] = content
+        disc["action"] = "amend"
+        disc["target_id"] = target_id
+        disc["source_story"] = "19.002"
+        return disc
+
+    def test_amend_preserves_untouched_sections(self, proj):
+        """The sections the discovery says nothing about must survive verbatim."""
+        dp = _modules["discovery_promoter"]
+        f = self._rich_constraint(proj)
+        before = len(f.read_text().splitlines())
+
+        dp.promote_discoveries([self._amendment()], root=str(proj))
+
+        after = f.read_text()
+        assert "The decision we reached after a long argument." in after
+        assert "line 1 of hard-won detail" in after
+        assert "line 400 of hard-won detail" in after
+        # 411 -> 15 was the bug; the file must not collapse.
+        assert len(after.splitlines()) >= before
+
+    def test_amend_replaces_only_the_context_section(self, proj):
+        dp = _modules["discovery_promoter"]
+        f = self._rich_constraint(proj)
+
+        dp.promote_discoveries([self._amendment()], root=str(proj))
+
+        after = f.read_text()
+        assert "Refined: limit is 300 rpm." in after
+        assert "The original context." not in after  # superseded, not appended
+
+    def test_amend_keeps_repo_section_convention(self, proj):
+        """Constraints follow Status/Context/Decision/Consequences, same as
+        decisions. Amending must not reshape a file into Constraint/Impact/
+        Mitigation, and must not inject placeholder comments."""
+        dp = _modules["discovery_promoter"]
+        f = self._rich_constraint(proj)
+
+        dp.promote_discoveries([self._amendment()], root=str(proj))
+
+        after = f.read_text()
+        headings = [ln for ln in after.splitlines() if ln.startswith("## ")]
+        assert headings == ["## Context", "## Decision", "## Consequences"]
+        assert "<!--" not in after
+
+    def test_amend_refreshes_tracking_metadata(self, proj):
+        dp = _modules["discovery_promoter"]
+        f = self._rich_constraint(proj)
+
+        dp.promote_discoveries([self._amendment()], root=str(proj))
+
+        after = f.read_text()
+        assert "**Source:** Story 19.002 (amended)" in after
+        assert "**Relevance Score:** 10" in after
+        assert "**Date:** 2020-01-01" not in after
+
+    def test_amend_preserves_unrelated_metadata(self, proj):
+        """Status/Type and any project-specific keys are not ours to rewrite."""
+        dp = _modules["discovery_promoter"]
+        f = self._rich_constraint(proj)
+
+        dp.promote_discoveries([self._amendment()], root=str(proj))
+
+        after = f.read_text()
+        assert "**Status:** Accepted" in after
+        assert "**Type:** technology" in after
+
+    def test_amend_keeps_id_and_updates_title(self, proj):
+        dp = _modules["discovery_promoter"]
+        f = self._rich_constraint(proj)
+        disc = self._amendment()
+        disc["title"] = "API rate limits (revised)"
+
+        dp.promote_discoveries([disc], root=str(proj))
+
+        assert f.read_text().splitlines()[0] == "# const-001: API rate limits (revised)"
+
+    def test_amend_is_idempotent_across_repeated_runs(self, proj):
+        """Amending twice with the same discovery must not duplicate sections
+        or metadata -- the file is current state, not an append log."""
+        dp = _modules["discovery_promoter"]
+        f = self._rich_constraint(proj)
+
+        dp.promote_discoveries([self._amendment()], root=str(proj))
+        once = f.read_text()
+        dp.promote_discoveries([self._amendment()], root=str(proj))
+        twice = f.read_text()
+
+        assert once == twice
+        assert twice.count("## Context") == 1
+        assert twice.count("**Relevance Score:**") == 1
+
+    def test_amend_preserves_decision_files_too(self, proj):
+        """The decision branch must preserve exactly as the constraint one does."""
+        dp = _modules["discovery_promoter"]
+        d = proj / ".solution-factory" / "decisions"
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / "adr-001.md"
+        f.write_text(
+            "# adr-001: Use Postgres\n\n**Status:** Accepted\n\n"
+            "## Context\nOld context.\n\n"
+            "## Decision\nPostgres, for the JSONB support.\n\n"
+            "## Consequences\nOperational burden of a managed instance.\n"
+        )
+
+        disc = self._discovery(10, "decision")
+        disc["title"] = "Use Postgres"
+        disc["content"] = "Revisited: JSONB plus logical replication."
+        disc["action"] = "amend"
+        disc["target_id"] = "adr-001"
+        result = dp.promote_discoveries([disc], root=str(proj))
+
+        assert len(result["amended"]) == 1
+        after = f.read_text()
+        assert "Revisited: JSONB plus logical replication." in after
+        assert "Postgres, for the JSONB support." in after
+        assert "Operational burden of a managed instance." in after
+
+    def test_amend_updates_legacy_constraint_section(self, proj):
+        """Files an earlier version of this script rewrote carry '## Constraint'
+        instead of '## Context'. Update that section rather than inserting a
+        second one beside it."""
+        dp = _modules["discovery_promoter"]
+        d = proj / ".solution-factory" / "constraints"
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / "const-001.md"
+        f.write_text(
+            "# const-001: API rate limits\n\n**Type:** technology\n\n"
+            "## Constraint\nStale text.\n\n"
+            "## Impact\nKeep me.\n"
+        )
+
+        dp.promote_discoveries([self._amendment()], root=str(proj))
+
+        after = f.read_text()
+        assert after.count("## Constraint") == 1
+        assert "## Context" not in after
+        assert "Refined: limit is 300 rpm." in after
+        assert "Stale text." not in after
+        assert "Keep me." in after
+
+    def test_amend_file_without_sections_keeps_existing_prose(self, proj):
+        """A hand-written target with no '## ' headings still gets a Context
+        section without losing what was already there."""
+        dp = _modules["discovery_promoter"]
+        d = proj / ".solution-factory" / "constraints"
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / "const-001.md"
+        f.write_text("# const-001: API rate limits\n\n**Type:** technology\n")
+
+        dp.promote_discoveries([self._amendment()], root=str(proj))
+
+        after = f.read_text()
+        assert "**Type:** technology" in after
+        assert "## Context" in after
+        assert "Refined: limit is 300 rpm." in after
+
+    # -- merge_into (backward consolidation) --------------------------------
+
+    def test_merge_into_stubs_sources_and_writes_target(self, proj):
+        dp = _modules["discovery_promoter"]
+        a = dp.promote_discoveries([self._discovery(10, "constraint")], root=str(proj))
+        b_disc = self._discovery(10, "constraint")
+        b_disc["title"] = "Cache key namespacing"
+        b = dp.promote_discoveries([b_disc], root=str(proj))
+
+        id_a = a["promoted"][0]["id"]
+        id_b = b["promoted"][0]["id"]
+
+        merged_md = "# const-001: Redis caching (consolidated)\n\nMerged content covering caching + key namespacing.\n"
+        result = dp.merge_into([id_a, id_b], id_a, merged_md, root=str(proj))
+
+        assert result["success"] is True
+        assert result["stubbed"] == [id_b]
+
+        target_content = Path(result["target_path"]).read_text()
+        assert target_content == merged_md
+
+        stub_content = (proj / ".solution-factory" / "constraints" / f"{id_b}.md").read_text()
+        assert "Superseded by" in stub_content
+        assert id_a in stub_content
+
+    def test_merge_into_unknown_source_fails(self, proj):
+        dp = _modules["discovery_promoter"]
+        result = dp.merge_into(["const-999"], "const-999", "content", root=str(proj))
+        assert result["success"] is False
+        assert "error" in result
+
+    def test_merge_into_fresh_target_creates_it_and_stubs_all_sources(self, proj):
+        """target_id may be an ID that does not exist yet -- it is created with
+        the merged content and every source is stubbed."""
+        dp = _modules["discovery_promoter"]
+        a = dp.promote_discoveries([self._discovery(10, "constraint")], root=str(proj))
+        b_disc = self._discovery(10, "constraint")
+        b_disc["title"] = "Cache key namespacing"
+        b = dp.promote_discoveries([b_disc], root=str(proj))
+        id_a, id_b = a["promoted"][0]["id"], b["promoted"][0]["id"]
+
+        merged_md = "# const-050: Caching (consolidated)\n\nEverything about caching.\n"
+        result = dp.merge_into([id_a, id_b], "const-050", merged_md, root=str(proj))
+
+        assert result["success"] is True
+        assert sorted(result["stubbed"]) == sorted([id_a, id_b])
+
+        target = proj / ".solution-factory" / "constraints" / "const-050.md"
+        assert target.read_text() == merged_md
+        for sid in (id_a, id_b):
+            stub = (proj / ".solution-factory" / "constraints" / f"{sid}.md").read_text()
+            assert "Superseded by" in stub
+            assert "const-050" in stub
+
+    def test_merge_into_stub_keeps_original_header(self, proj):
+        """A stub must still identify itself, so references to the old ID
+        remain readable rather than resolving to an anonymous pointer."""
+        dp = _modules["discovery_promoter"]
+        a = dp.promote_discoveries([self._discovery(10, "constraint")], root=str(proj))
+        b_disc = self._discovery(10, "constraint")
+        b_disc["title"] = "Cache key namespacing"
+        b = dp.promote_discoveries([b_disc], root=str(proj))
+        id_a, id_b = a["promoted"][0]["id"], b["promoted"][0]["id"]
+
+        dp.merge_into([id_a, id_b], id_a, "merged", root=str(proj))
+        stub = (proj / ".solution-factory" / "constraints" / f"{id_b}.md").read_text()
+        assert stub.startswith(f"# {id_b}: Cache key namespacing")
+
+    def test_merge_into_target_in_sources_is_not_stubbed(self, proj):
+        """The target must never stub itself into a pointer to itself."""
+        dp = _modules["discovery_promoter"]
+        a = dp.promote_discoveries([self._discovery(10, "constraint")], root=str(proj))
+        id_a = a["promoted"][0]["id"]
+
+        result = dp.merge_into([id_a], id_a, "merged body", root=str(proj))
+        assert result["stubbed"] == []
+        assert Path(result["target_path"]).read_text() == "merged body"
+
+    def test_merge_into_decisions_resolve_by_adr_prefix(self, proj):
+        """resolve_target_path routes by ID prefix, so adr-* must land in
+        decisions/ and not be looked up under constraints/."""
+        dp = _modules["discovery_promoter"]
+        a = dp.promote_discoveries([self._discovery(10, "decision")], root=str(proj))
+        id_a = a["promoted"][0]["id"]
+        assert id_a.startswith("adr-")
+
+        result = dp.merge_into([id_a], id_a, "merged adr", root=str(proj))
+        assert result["success"] is True
+        assert Path(result["target_path"]).parent.name == "decisions"
+
+    # -- list_existing edge cases ------------------------------------------
+
+    def test_list_existing_falls_back_to_stem_when_no_title_header(self, proj):
+        """A hand-written file without the '# id: title' header must still be
+        listed -- dedup checks depend on seeing every existing item."""
+        dp = _modules["discovery_promoter"]
+        d = proj / ".solution-factory" / "constraints"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "const-001.md").write_text("Some notes with no header at all.\n")
+
+        items = dp.list_existing(root=str(proj))["items"]
+        assert len(items) == 1
+        assert items[0]["id"] == "const-001"
+        assert items[0]["title"] == "const-001"
+
+    def test_list_existing_ignores_unrelated_files(self, proj):
+        dp = _modules["discovery_promoter"]
+        dp.promote_discoveries([self._discovery(10, "constraint")], root=str(proj))
+        d = proj / ".solution-factory" / "constraints"
+        (d / "README.md").write_text("not a constraint")
+        (d / "notes.txt").write_text("nor this")
+
+        items = dp.list_existing(root=str(proj))["items"]
+        assert [i["id"] for i in items] == ["const-001"]
+
+    def test_list_existing_sorted_within_type(self, proj):
+        dp = _modules["discovery_promoter"]
+        for _ in range(3):
+            dp.promote_discoveries([self._discovery(10, "constraint")], root=str(proj))
+        items = dp.list_existing(root=str(proj))["items"]
+        assert [i["id"] for i in items] == ["const-001", "const-002", "const-003"]
 
 
 # ---------------------------------------------------------------------------
