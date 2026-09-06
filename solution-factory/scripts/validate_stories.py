@@ -37,7 +37,19 @@ def validate(epic_id=None, root="."):
     warnings = []
     seen_ids = set()
 
-    epics = sequence.get("epics", [])
+    all_epics = sequence.get("epics", [])
+
+    # Execution order is array position in sequence.json — across epics first,
+    # then within each epic. Build a global position index BEFORE applying any
+    # --epic filter, so a dependency living in another epic still resolves when
+    # validating a single epic in isolation.
+    global_order = {}
+    for e in all_epics:
+        for s in e.get("stories", []):
+            if s["id"] not in global_order:
+                global_order[s["id"]] = len(global_order)
+
+    epics = all_epics
     if epic_id:
         epics = [e for e in epics if e["id"] == epic_id]
         if not epics:
@@ -96,21 +108,30 @@ def validate(epic_id=None, root="."):
                         f"Story {sid} complexity {complexity} exceeds threshold {threshold}"
                     )
 
-            # Dependency validation
+            # Dependency validation — resolved against the GLOBAL story order,
+            # never just the epic under validation. Cross-epic dependencies are
+            # sanctioned by design (/create-stories: "Cross-epic dependencies are
+            # fine: a story in epic-NN+1 may depend on a story in epic-NN
+            # (dependencies are global story IDs; epics run sequentially)"), and
+            # are produced routinely whenever an epic is split at the story cap.
+            # Comparing positions rather than "have I seen it yet" also means a
+            # dependency on an EARLIER epic is accepted while one on a LATER epic
+            # is still correctly reported as a forward reference.
             for dep in story.get("dependencies", []):
-                if dep not in seen_ids:
-                    # Check if it's in the full sequence (just later)
-                    all_ids = [s["id"] for e in epics for s in e["stories"]]
-                    if dep in all_ids:
-                        errors.append(
-                            f"Story {sid} depends on {dep} which appears later in sequence (forward reference)"
-                        )
-                    else:
-                        errors.append(f"Story {sid} depends on unknown story: {dep}")
+                if dep not in global_order:
+                    errors.append(f"Story {sid} depends on unknown story: {dep}")
+                elif sid in global_order and global_order[dep] >= global_order[sid]:
+                    errors.append(
+                        f"Story {sid} depends on {dep} which appears later in sequence (forward reference)"
+                    )
 
-    # Cycle detection via topological sort
+    # Cycle detection via topological sort. Build the graph from ALL epics so a
+    # cycle that spans an epic boundary is actually traversable when validating
+    # one epic — but only report cycles reachable from the stories in scope, so
+    # a --epic run doesn't surface problems belonging to a different epic.
     all_stories = {s["id"]: s.get("dependencies", [])
-                   for e in epics for s in e["stories"]}
+                   for e in all_epics for s in e["stories"]}
+    in_scope_ids = [s["id"] for e in epics for s in e["stories"]]
     visited = set()
     in_stack = set()
 
@@ -127,7 +148,7 @@ def validate(epic_id=None, root="."):
         in_stack.discard(node)
         return False
 
-    for sid in all_stories:
+    for sid in in_scope_ids:
         if has_cycle(sid):
             errors.append(f"Dependency cycle detected involving story: {sid}")
             break
