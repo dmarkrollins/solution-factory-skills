@@ -2377,6 +2377,54 @@ class TestEpicRunManager:
         assert result["run"]["stopped_at"] is None
         assert result["run"]["current_story"] is None
 
+    def test_start_run_defaults_to_sequential_mode(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        result = erm.start_run("epic-01", review_merges=False, root=str(proj))
+        assert result["run"]["mode"] == "sequential"
+
+    def test_start_run_concurrent_mode(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        result = erm.start_run("epic-01", review_merges=False, root=str(proj), mode="concurrent")
+        assert result["run"]["mode"] == "concurrent"
+
+    def test_start_run_rejects_unknown_mode(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        assert "error" in erm.start_run("epic-01", review_merges=False, root=str(proj), mode="lanes")
+
+    def test_resume_run_keeps_mode_and_review_merges(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        erm.start_run("epic-01", review_merges=True, root=str(proj), mode="concurrent")
+        erm.update_current_story("epic-01", "01.002", root=str(proj))
+        erm.stop_run("epic-01", root=str(proj))
+        result = erm.resume_run("epic-01", root=str(proj))
+        assert result["success"] is True
+        run = result["run"]
+        assert run["status"] == "active"
+        assert run["stopped_at"] is None
+        assert run["mode"] == "concurrent"
+        assert run["review_merges"] is True
+        assert run["current_story"] == "01.002"
+
+    def test_resume_run_backfills_mode_on_old_run_blocks(self, proj):
+        self._write_epic_json(proj, "epic-01", extra={"run": {
+            "status": "stopped", "review_merges": False, "started_at": "x",
+            "stopped_at": "y", "current_story": None}})
+        erm = _modules["epic_run_manager"]
+        result = erm.resume_run("epic-01", root=str(proj))
+        assert result["run"]["mode"] == "sequential"
+
+    def test_resume_run_errors_without_run_or_when_complete(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        assert "error" in erm.resume_run("epic-01", root=str(proj))
+        erm.start_run("epic-01", review_merges=False, root=str(proj))
+        erm.complete_run("epic-01", root=str(proj))
+        assert "error" in erm.resume_run("epic-01", root=str(proj))
+
     def test_start_run_review_merges_true(self, proj):
         self._write_epic_json(proj, "epic-01")
         erm = _modules["epic_run_manager"]

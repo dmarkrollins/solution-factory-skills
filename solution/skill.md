@@ -162,10 +162,12 @@ loop. Otherwise resolves the next single story and flows into planning.
    cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py find --root .
    ```
    - If `found: true` → announce `[RESUMING EPIC] [epic_id]: [title]`, run
-     `start` to flip status back to `active`, then re-enter the EPIC-3
-     orchestration loop using the stored `epic_id` and `review_merges`:
+     `resume` to flip status back to `active` (it keeps the stored
+     `review_merges` and `mode` — never call `start` here, which would rewrite
+     the run block and reset both), then re-enter the EPIC-3 orchestration
+     loop using the stored `epic_id`, `review_merges` and `mode`:
      ```bash
-     cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py start --epic [epic_id] --root .
+     cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py resume --epic [epic_id] --root .
      ```
    - If `found: false` → continue to step 2.
 
@@ -595,10 +597,11 @@ Tell user: **"Run `/solution complete [ID]` when ready."**
    cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py find --root .
    ```
    - If `found: true` → announce `[RESUMING EPIC] [epic_id]: [title]`, flip to
-     active, then re-enter the EPIC-3 orchestration loop using the stored
-     `epic_id` and `review_merges`:
+     active with `resume` (keeps the stored `review_merges` and `mode`; `start`
+     would reset them), then re-enter the EPIC-3 orchestration loop using the
+     stored `epic_id`, `review_merges` and `mode`:
      ```bash
-     cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py start --epic [epic_id] --root .
+     cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py resume --epic [epic_id] --root .
      ```
    - If `found: false` → continue to step 2.
 

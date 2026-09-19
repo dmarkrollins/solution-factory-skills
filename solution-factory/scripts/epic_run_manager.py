@@ -6,6 +6,7 @@ run block schema:
   {
     "status":        "active" | "stopped" | "complete",
     "review_merges": bool,
+    "mode":          "sequential" | "concurrent",
     "started_at":    ISO timestamp,
     "stopped_at":    ISO timestamp | null,
     "current_story": story_id | null
@@ -38,17 +39,41 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def start_run(epic_id, review_merges, root="."):
+MODES = ("sequential", "concurrent")
+
+
+def start_run(epic_id, review_merges, root=".", mode="sequential"):
+    if mode not in MODES:
+        return {"error": f"Invalid mode: {mode} (expected one of {', '.join(MODES)})"}
     data, path = _load(epic_id, root)
     if data is None:
         return {"error": f"Epic JSON not found: {epic_id}"}
     data["run"] = {
         "status": "active",
         "review_merges": bool(review_merges),
+        "mode": mode,
         "started_at": _now(),
         "stopped_at": None,
         "current_story": None,
     }
+    _save(data, path)
+    return {"success": True, "epic_id": epic_id, "run": data["run"]}
+
+
+def resume_run(epic_id, root="."):
+    """Flip a stopped run back to active, keeping mode, review_merges and
+    current_story exactly as they were -- unlike start_run, which rewrites
+    the whole block and would silently reset a concurrent run to sequential."""
+    data, path = _load(epic_id, root)
+    if data is None:
+        return {"error": f"Epic JSON not found: {epic_id}"}
+    if "run" not in data:
+        return {"error": f"No run block found for {epic_id}"}
+    if data["run"].get("status") == "complete":
+        return {"error": f"Run for {epic_id} is already complete"}
+    data["run"]["status"] = "active"
+    data["run"]["stopped_at"] = None
+    data["run"].setdefault("mode", "sequential")
     _save(data, path)
     return {"success": True, "epic_id": epic_id, "run": data["run"]}
 
@@ -108,15 +133,19 @@ def find_active_run(root="."):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Manage epic run state")
-    parser.add_argument("command", choices=["start", "stop", "complete", "update", "find"])
+    parser.add_argument("command", choices=["start", "resume", "stop", "complete", "update", "find"])
     parser.add_argument("--epic", help="Epic ID (e.g. epic-02)")
     parser.add_argument("--story", help="Current story ID (for update)")
     parser.add_argument("--review-merges", action="store_true", default=False)
+    parser.add_argument("--mode", choices=list(MODES), default="sequential",
+                        help="Run mode (for start)")
     parser.add_argument("--root", default=".", help="Project root")
     args = parser.parse_args()
 
     if args.command == "start":
-        result = start_run(args.epic, args.review_merges, args.root)
+        result = start_run(args.epic, args.review_merges, args.root, args.mode)
+    elif args.command == "resume":
+        result = resume_run(args.epic, args.root)
     elif args.command == "stop":
         result = stop_run(args.epic, args.root)
     elif args.command == "complete":
