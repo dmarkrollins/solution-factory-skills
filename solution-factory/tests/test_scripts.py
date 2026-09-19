@@ -67,6 +67,7 @@ _script_names = [
     "check_venv",
     "wireframe_linker",
     "epic_run_manager",
+    "schedule_stories",
     "idea_store",
     "idea_plan_check",
     "read_idea_plan",
@@ -2683,3 +2684,181 @@ class TestReadIdeaPlan:
         assert result["title"] == "First idea"
         assert "body" in result
         assert "bounded-concurrency queue" in result["technical_approach"]
+
+
+# ---------------------------------------------------------------------------
+# schedule_stories
+# ---------------------------------------------------------------------------
+
+
+class TestScheduleStories:
+    def _bootstrap(self, proj, stories, config=None, epic="epic-01"):
+        """stories: list of (story_id, status, deps, outputs-or-None)."""
+        gs = _modules["generate_sequence"]
+        scaffold = _modules["scaffold_structure"]
+        num = int(epic.split("-")[1])
+        scaffold.create_epic(num, root=str(proj))
+        gs.add_epic(epic, root=str(proj))
+        for story_id, status, deps, outputs in stories:
+            data = make_minimal_story_data(story_id, epic)
+            if outputs is not None:
+                data["outputs"] = outputs
+            write_story_yaml(proj, epic, story_id, status, story_data=data)
+            gs.add_story(epic, story_id, dependencies=deps, root=str(proj))
+            if status != "backlog":
+                gs.update_status(story_id, status, root=str(proj))
+        if config is not None:
+            (proj / ".solution-factory" / "config.json").write_text(json.dumps(config))
+
+    def _run(self, proj, **kw):
+        return _modules["schedule_stories"].schedule(kw.pop("epic", "epic-01"), root=str(proj), **kw)
+
+    def _ids(self, entries):
+        return [e["id"] for e in entries]
+
+    def test_disjoint_ready_stories_all_start(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "backlog", [], {"modify": ["a.py"]}),
+            ("01.002", "backlog", [], {"create": ["b.py"]}),
+            ("01.003", "backlog", [], {"modify": ["c.py"]}),
+        ])
+        r = self._run(proj)
+        assert r["mode"] == "concurrent"
+        assert self._ids(r["startable"]) == ["01.001", "01.002", "01.003"]
+        assert r["held"] == []
+        assert r["free_slots"] == 0
+
+    def test_max_concurrent_limits_starts_in_sequence_order(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "backlog", [], {"modify": ["a.py"]}),
+            ("01.002", "backlog", [], {"modify": ["b.py"]}),
+            ("01.003", "backlog", [], {"modify": ["c.py"]}),
+        ], config={"epic_run": {"max_concurrent": 2}})
+        r = self._run(proj)
+        assert self._ids(r["startable"]) == ["01.001", "01.002"]
+        assert r["held"] == [{"id": "01.003", "reason": "no free slot"}]
+
+    def test_in_flight_stories_consume_slots_and_block_overlap(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "active", [], {"modify": ["a.py", "shared.py"]}),
+            ("01.002", "backlog", [], {"modify": ["shared.py"]}),
+            ("01.003", "backlog", [], {"modify": ["c.py"]}),
+        ])
+        r = self._run(proj)  # in_flight defaults to active stories
+        assert self._ids(r["in_flight"]) == ["01.001"]
+        assert self._ids(r["startable"]) == ["01.003"]
+        assert r["held"] == [{"id": "01.002", "reason": "shares shared.py with 01.001"}]
+        assert r["free_slots"] == 1
+
+    def test_explicit_in_flight_overrides_active_default(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "active", [], {"modify": ["a.py"]}),
+            ("01.002", "backlog", [], {"modify": ["b.py"]}),
+        ])
+        r = self._run(proj, in_flight=[])
+        assert r["in_flight"] == []
+        assert self._ids(r["startable"]) == ["01.002"]
+        assert r["free_slots"] == 2
+
+    def test_ready_stories_that_overlap_each_other_start_first_only(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "backlog", [], {"modify": ["utils.py"]}),
+            ("01.002", "backlog", [], {"modify": ["utils.py"]}),
+            ("01.003", "backlog", [], {"modify": ["other.py"]}),
+        ])
+        r = self._run(proj)
+        assert self._ids(r["startable"]) == ["01.001", "01.003"]
+        assert r["held"] == [{"id": "01.002", "reason": "shares utils.py with 01.001"}]
+
+    def test_unmet_dependency_holds_story(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "backlog", [], {"modify": ["a.py"]}),
+            ("01.002", "backlog", ["01.001"], {"modify": ["b.py"]}),
+        ])
+        r = self._run(proj)
+        assert self._ids(r["startable"]) == ["01.001"]
+        assert r["held"] == [{"id": "01.002", "reason": "waits for 01.001"}]
+
+    def test_cross_epic_dependency_resolved_globally(self, proj):
+        self._bootstrap(proj, [("01.001", "done", [], {"modify": ["a.py"]})], epic="epic-01")
+        self._bootstrap(proj, [("02.001", "backlog", ["01.001"], {"modify": ["b.py"]})], epic="epic-02")
+        r = self._run(proj, epic="epic-02")
+        assert self._ids(r["startable"]) == ["02.001"]
+
+    def test_story_without_outputs_runs_alone(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "backlog", [], None),
+            ("01.002", "backlog", [], {"modify": ["b.py"]}),
+        ])
+        r = self._run(proj)
+        assert self._ids(r["startable"]) == ["01.001"]
+        assert r["held"] == [{"id": "01.002", "reason": "01.001 declares no outputs and runs alone"}]
+        assert r["startable"][0]["files"] is None
+
+    def test_story_without_outputs_waits_for_empty_run(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "active", [], {"modify": ["a.py"]}),
+            ("01.002", "backlog", [], None),
+            ("01.003", "backlog", [], {"modify": ["c.py"]}),
+        ])
+        r = self._run(proj)
+        assert self._ids(r["startable"]) == ["01.003"]
+        assert r["held"] == [{"id": "01.002", "reason": "declares no outputs; waits until nothing is in flight (01.001)"}]
+
+    def test_shared_paths_excluded_from_overlap_check(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "backlog", [], {"modify": ["a.py", "CLAUDE.md", ".meteor/versions"]}),
+            ("01.002", "backlog", [], {"modify": ["b.py", "CLAUDE.md", ".meteor/versions"]}),
+        ], config={"epic_run": {"shared_paths": ["CLAUDE.md", ".meteor/*"]}})
+        r = self._run(proj)
+        assert self._ids(r["startable"]) == ["01.001", "01.002"]
+        assert r["startable"][0]["files"] == ["a.py"]
+
+    def test_default_shared_paths_ignore_solution_factory_tree(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "backlog", [], {"modify": [".solution-factory/decisions/adr-001.md", "a.py"]}),
+            ("01.002", "backlog", [], {"modify": [".solution-factory/decisions/adr-001.md", "b.py"]}),
+        ])
+        r = self._run(proj)
+        assert self._ids(r["startable"]) == ["01.001", "01.002"]
+
+    def test_outputs_made_only_of_shared_paths_count_as_undeclared(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "backlog", [], {"modify": [".solution-factory/x.md"]}),
+            ("01.002", "backlog", [], {"modify": ["b.py"]}),
+        ])
+        r = self._run(proj)
+        assert self._ids(r["startable"]) == ["01.001"]
+        assert r["open_stories"][0]["declared"] is False
+
+    def test_max_concurrent_one_reports_sequential_mode(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "backlog", [], {"modify": ["a.py"]}),
+            ("01.002", "backlog", [], {"modify": ["b.py"]}),
+        ], config={"epic_run": {"max_concurrent": 1}})
+        r = self._run(proj)
+        assert r["mode"] == "sequential"
+        assert self._ids(r["startable"]) == ["01.001"]
+        assert r["held"] == [{"id": "01.002", "reason": "no free slot"}]
+
+    def test_open_stories_table_covers_backlog_and_active_only(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "done", [], {"modify": ["a.py"]}),
+            ("01.002", "active", [], {"modify": ["b.py"]}),
+            ("01.003", "backlog", ["01.002"], {"create": ["c.py"], "modify": ["b.py"]}),
+            ("01.004", "deferred", [], None),
+        ])
+        r = self._run(proj)
+        assert self._ids(r["open_stories"]) == ["01.002", "01.003"]
+        row = r["open_stories"][1]
+        assert row == {
+            "id": "01.003", "title": "Story 01.003", "status": "backlog",
+            "files": ["b.py", "c.py"], "declared": True, "deps_pending": ["01.002"],
+        }
+
+    def test_missing_epic_and_missing_sequence_error(self, proj, tmp_path):
+        self._bootstrap(proj, [("01.001", "backlog", [], None)])
+        assert "error" in self._run(proj, epic="epic-99")
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        assert "error" in _modules["schedule_stories"].schedule("epic-01", root=str(empty))
