@@ -188,6 +188,27 @@ class TestConfigLoader:
         assert "relevance" in cfg
         assert "stories" in cfg
         assert "ux" in cfg
+        assert "epic_run" in cfg
+
+    def test_epic_run_defaults(self, proj):
+        loader = _modules["config_loader"]
+        cfg = loader.load_config(root=str(proj))["config"]["epic_run"]
+        assert cfg == {
+            "max_concurrent": 3,
+            "shared_paths": [".solution-factory/**"],
+            "worktree_setup": None,
+        }
+
+    def test_epic_run_partial_override_keeps_other_defaults(self, proj):
+        loader = _modules["config_loader"]
+        cfg_path = proj / ".solution-factory" / "config.json"
+        cfg_path.write_text(json.dumps({
+            "epic_run": {"max_concurrent": 1, "worktree_setup": "npm ci"}
+        }))
+        cfg = loader.load_config(root=str(proj))["config"]["epic_run"]
+        assert cfg["max_concurrent"] == 1
+        assert cfg["worktree_setup"] == "npm ci"
+        assert cfg["shared_paths"] == [".solution-factory/**"]
 
     def test_deep_merge_override(self):
         loader = _modules["config_loader"]

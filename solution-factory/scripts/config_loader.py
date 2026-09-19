@@ -33,6 +33,17 @@ DEFAULTS = {
             "bundler": "vite",
             "design_system": "chakra ui"
         }
+    },
+    # Autonomous /solution epic runs. max_concurrent > 1 lets file-disjoint
+    # stories run at the same time in separate worktree slots; shared_paths are
+    # coordination files every story touches (lockfiles, CLAUDE.md, ...) that
+    # are excluded from the "do these stories share a file" check; and
+    # worktree_setup is a shell command run once per new slot (installs,
+    # .env copies) since a fresh worktree has none of that.
+    "epic_run": {
+        "max_concurrent": 3,
+        "shared_paths": [".solution-factory/**"],
+        "worktree_setup": None
     }
 }
 
