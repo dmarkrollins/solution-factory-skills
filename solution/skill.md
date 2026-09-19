@@ -77,6 +77,7 @@ RUNNING A WHOLE EPIC (autonomous — one confirmation, then unattended):
   /solution epic <id> --review-merges  Same, but pause for yes/no before each merge
   /solution epic all                   Run every ready epic, in sequence order, back to back
                                         (always automerges — no --review-merges in this mode)
+  /solution epic <id> --sequential     Force one story at a time (see CONCURRENT RUNS)
   /solution stop                       Pause the active epic run; resume later with /solution next
 
 SEEING WHERE THINGS STAND:
@@ -106,6 +107,19 @@ INTERACTIVE vs AUTONOMOUS
   the next ready story globally instead of stopping at one epic's backlog. A
   blocker anywhere stops the ENTIRE run, not just the current epic.
 
+CONCURRENT RUNS
+  When epic_run.max_concurrent (config.json, default 3) is above 1, `epic`
+  works several stories at once. Each in-flight story gets its own git
+  worktree under .sf-worktrees/slot-N; the main checkout stays on the merge
+  branch and is the only place the ledger is written or merges happen. Two
+  stories run together only when their declared `outputs` (written by
+  /create-stories) share no file — a story with no outputs runs alone. The
+  full test suite runs once per story, on its branch after the latest merge
+  branch is merged in, right before merging. A blocked story is left active
+  and skipped; everything that doesn't depend on it keeps going.
+  --sequential and --review-merges both force the one-at-a-time loop.
+  epic_run.worktree_setup runs once per new slot (installs, .env copies).
+
 STOP / RESUME AN EPIC RUN
   Hit Escape to interrupt, then:
     /solution stop     saves run state to the epic JSON (via epic_run_manager.py)
@@ -116,7 +130,10 @@ STOP / RESUME AN EPIC RUN
 
   State is stored in the `run` block of .solution-factory/epics/<id>/<id>.json:
     status: active | stopped | complete
+    mode: sequential | concurrent
     current_story, review_merges, started_at, stopped_at
+    (in concurrent mode the in-flight set is whatever is `active` in
+    sequence.json; current_story is unused)
 
   `epic all` reuses this same per-epic run block — it doesn't add its own
   tracking file. If interrupted, /solution next resumes whichever epic was
@@ -895,8 +912,12 @@ Pause an active epic run so the user can close Claude and resume later with
    ```
    Epic [ID] paused — [Title]
    Completed: [list of done story IDs and titles]
-   In progress: [current_story ID and title, or "none"]
+   In progress: [current_story ID and title, or "none"; in concurrent mode list every `active` story]
    Remaining: [count of backlog stories]
+
+   In concurrent mode, workers still running in the background may finish
+   after the pause; their branches stay in their slots and `/solution next`
+   picks them up (EPIC-3c step 0).
 
    Run `/solution next` to resume.
    ```
@@ -963,6 +984,10 @@ Parse the target from arguments:
   both are given, tell the user `epic all` always automerges (run individual
   epics with `epic <id> --review-merges` if you want per-merge approval) and stop.
 
+- `--sequential` — run one story at a time even when `epic_run.max_concurrent`
+  allows more. Use it for a project whose tests can't run in two worktrees at
+  once, or when you want the simpler transcript.
+
 Capture `REVIEW_MERGES = true|false` from the flag and thread it to every worker.
 In ALL_MODE, `REVIEW_MERGES` is always `false`.
 
@@ -993,6 +1018,25 @@ cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory
 ```
 Capture `MERGE_BRANCH` from the output for use throughout the run.
 
+**Determine the run mode.** Concurrent mode is the default whenever config
+allows it; two flags force sequential:
+```bash
+cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/config_loader.py . | python3 -c "import sys,json; c=json.load(sys.stdin)['config']['epic_run']; print('max_concurrent=%s worktree_setup=%s' % (c.get('max_concurrent',1), c.get('worktree_setup')))"
+```
+- `MODE = sequential` if `--sequential` or `--review-merges` was passed, or
+  `max_concurrent` is 1.
+- Otherwise `MODE = concurrent`, `MAX_CONCURRENT` = that value, and
+  `WORKTREE_SETUP` = the setup command (may be `None`). Then compute the first
+  schedule for the manifest (single-epic mode now; ALL_MODE does this per epic
+  at EPIC-3 step 1a):
+  ```bash
+  cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/schedule_stories.py --epic [EPIC_ID] --in-flight
+  ```
+  Keep `open_stories` for the pre-flight table. If every open story has
+  `declared: false`, say so at the gate — the run will behave sequentially
+  because nothing can be proven disjoint — and continue; do not silently
+  switch `MODE`.
+
 ## EPIC-2: Pre-flight confirmation (the ONLY human gate)
 
 Present the manifest and the config, then **wait for one yes/no**.
@@ -1005,9 +1049,17 @@ Present the manifest and the config, then **wait for one yes/no**.
     ...
   Config: automerge=[..] · demo_scripts=[..] · require_tests=[..] · merge_branch=[..] · auto_accept_recommendations=[..]
   Merges: [auto | review each merge (--review-merges)]
+  Mode: [sequential | concurrent, up to N at once · worktree_setup: <cmd | none>]
 
   Run all [N] ready stories autonomously? (yes / no)
   ```
+  In concurrent mode, replace the story list with the schedule table so the
+  user sees what will actually run together (one row per `open_stories`
+  entry):
+  ```
+    [ID]  [Title]   complexity [N]   files: [a.py, b.py | (none declared — runs alone)]   waits: [deps_pending | —]
+  ```
+  and add one line naming the stories that lack outputs, if any.
 
 - **ALL_MODE** — one confirmation for the whole cross-epic run, manifest grouped
   by epic in sequence order:
@@ -1035,12 +1087,17 @@ Present the manifest and the config, then **wait for one yes/no**.
 
   Single-epic mode writes it here, immediately:
   ```bash
-  cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py start --epic [EPIC_ID] [--review-merges] --root .
+  cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py start --epic [EPIC_ID] [--review-merges] --mode [MODE] --root .
   ```
 
 ## EPIC-3: Orchestration loop
 
-Maintain a ledger in the main thread: `[{id, title, result, note}]`. Repeat:
+Maintain a ledger in the main thread: `[{id, title, result, note}]`.
+
+**`MODE = concurrent` → run EPIC-3c instead of the numbered loop below.**
+EPIC-3c reuses steps 0, 3, 4 and 5 of this loop by reference; only the
+"which story next" and "where does the worker run" parts differ. The
+sequential loop is unchanged. Repeat:
 
 0. **Verify the last completed story actually merged.** A `done` story folder
    only means `story_completer.py complete` ran (steps 1–8/11–12 of `complete`)
@@ -1099,8 +1156,12 @@ Maintain a ledger in the main thread: `[{id, title, result, note}]`. Repeat:
     - Start the run block on the new epic's own JSON (reuses the exact same
       per-epic tracking single-epic mode uses — no separate ALL_MODE state file):
       ```bash
-      cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py start --epic [CURRENT_EPIC_ID] --root .
+      cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/epic_run_manager.py start --epic [CURRENT_EPIC_ID] --mode [MODE] --root .
       ```
+    - In concurrent mode, the previous epic must be fully drained first (no
+      in-flight, no startable stories, nothing quarantined — EPIC-3c exit
+      rule); then run EPIC-3c for the new epic. Slots are kept across the
+      epic boundary; they are removed once at EPIC-5.
     (Sequence.json's own epic `status` field flips to `completed` separately,
     via the existing `complete` step 12 logic — this bookkeeping only concerns
     the pause/resume `run` block, not that field.)
@@ -1167,6 +1228,119 @@ Merge to [MERGE_BRANCH]? (yes / no)
 - **no** → leave the branch unmerged for the user, record the story as held, and
   go to EPIC-5. Do not start the next story.
 
+### EPIC-3c: Concurrent loop (`MODE = concurrent`)
+
+Several stories are worked at once, each in its own git worktree ("slot").
+Two rules make this safe without locks: **the main project root stays on
+`[MERGE_BRANCH]` for the whole run and is the only place the
+`.solution-factory/` ledger is written or a merge happens**, and **two stories
+run together only when `schedule_stories.py` says their declared files are
+disjoint**. Keep an in-memory map `SLOTS = {slot_path: story_id | free}` and
+`IN_FLIGHT = [story ids with a running worker or an unfinished gauntlet]`.
+
+**Slot setup (once, before the first story):** create `MAX_CONCURRENT`
+worktrees. Each is created detached (a branch is checked out into it per
+story); `worktree_setup` runs once per new slot so the worktree has its
+dependencies and env files.
+```bash
+cd $(git rev-parse --show-toplevel) && grep -qx '.sf-worktrees/' .git/info/exclude 2>/dev/null || echo '.sf-worktrees/' >> .git/info/exclude
+cd $(git rev-parse --show-toplevel) && for n in $(seq 1 [MAX_CONCURRENT]); do
+  [ -d .sf-worktrees/slot-$n ] || { git worktree add --detach .sf-worktrees/slot-$n [MERGE_BRANCH] && ( cd .sf-worktrees/slot-$n && [WORKTREE_SETUP] ); }
+done
+```
+Drop the `( cd … && [WORKTREE_SETUP] )` subshell when `worktree_setup` is
+`None`. If it fails, stop and show the error — every slot would fail the same
+way.
+
+Then loop:
+
+0. **Backstops (same as sequential step 0, plus one).** Run the unmerged-
+   `done`-branch check exactly as sequential step 0. Additionally, for every
+   `active` story whose `feature/[ID]-*` branch is **already an ancestor of
+   `[MERGE_BRANCH]`**, the merge landed but completion didn't: run EPIC-4c for
+   it now (concurrent variant), then continue. Finally, any `active` story that
+   is not in `IN_FLIGHT` (a resumed run) is re-attached: find its worktree via
+   `git worktree list` (branch `feature/[ID]-*`); if none, check its branch out
+   into a free slot (`git -C [SLOT] checkout feature/[ID]-[slug]`) or, if the
+   branch doesn't exist, create it from `[MERGE_BRANCH]`; then spawn its
+   worker in `resume` mode with the slot path and add it to `IN_FLIGHT`.
+
+1. **Schedule.**
+   ```bash
+   cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/schedule_stories.py --epic [EPIC_ID] --in-flight [IN_FLIGHT ids...]
+   ```
+   Always pass `--in-flight` explicitly (with no ids when nothing is running),
+   so a quarantined story that is still `active` in the ledger is not counted
+   as running.
+
+2. **Start every `startable` story** — in `sequence.json` order, one
+   activation at a time, in the main root:
+   ```bash
+   cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/story_activator.py --story [ID] --epic [EPIC_ID] \
+     && git add .solution-factory/ && git commit -m "Activate story [ID]: [title]" \
+     && git -C .sf-worktrees/slot-[N] checkout -b feature/[ID]-[slug] [MERGE_BRANCH]
+   ```
+   The branch is cut *after* the activation commit, so the slot sees the
+   story's `active/` folder. Assign the slot in `SLOTS`, add the id to
+   `IN_FLIGHT`, and spawn the worker (EPIC-4) in **`slot` mode** with the slot
+   path. Spawn all startable workers in **one message** so they run at the
+   same time; the Agent tool runs them in the background and notifies you as
+   each finishes.
+
+3. **Wait.** If nothing is startable and `IN_FLIGHT` is non-empty, wait for
+   the next worker notification — do not poll, do not start anything else.
+
+4. **On a worker result** (one story at a time, in arrival order):
+   - Sanity check as EPIC-4, but against the slot:
+     `git -C [SLOT] log --oneline [MERGE_BRANCH]..HEAD | head && git -C [SLOT] status --porcelain`.
+   - `BLOCKED` → **quarantine**: append `BLOCKED` to the ledger with the
+     blocker text, remove the id from `IN_FLIGHT`, free the slot
+     (`git -C [SLOT] checkout --detach`), leave the story `active` and its
+     branch in place. Do **not** stop the run — go to step 1. Stories that
+     depend on it simply never become ready.
+   - `IMPLEMENTED` → run the quality gauntlet (EPIC-4b, concurrent variant:
+     reviewers work in the slot). Rework re-spawns the worker in the same slot.
+     Budget exhausted → quarantine as above. Clean → step 5.
+
+5. **Merge queue — strictly one story at a time.** Never interleave two
+   stories' merge-queue steps; finish one before handling another result.
+   1. Bring the branch up to date in the slot:
+      `git -C [SLOT] merge [MERGE_BRANCH] -m "Merge [MERGE_BRANCH] into feature/[ID]-[slug]"`.
+      On conflict: `git -C [SLOT] merge --abort`, then re-spawn the worker in
+      `rework` mode with a **merge-conflict notice** listing the conflicting
+      files (`git -C [SLOT] diff --name-only --diff-filter=U` before aborting).
+      This counts against the same 3-cycle rework budget as review findings;
+      when it runs out, quarantine. On `IMPLEMENTED`, return to 5.1.
+   2. **Tier 2 in the slot** — the full suite, synchronous, bounded (same
+      rules as the worker's testing override), run from `[SLOT]`. This is the
+      one full-suite run per story: the worker didn't run it, and EPIC-4c's
+      backstop is skipped in concurrent mode. Failure → rework as in 5.1 with
+      the failures as findings.
+   3. Validate in the slot:
+      `python3 .../story_completer.py validate --story [ID] --epic [EPIC_ID] --root [SLOT]`
+      and `python3 .../check_plan_complete.py --story [ID] --epic [EPIC_ID] --root [SLOT]`.
+      Failure → quarantine (note: "completion validation failed").
+   4. Merge in the main root — no checkout, it is already on `[MERGE_BRANCH]`:
+      ```bash
+      cd $(git rev-parse --show-toplevel) && git merge --no-ff feature/[ID]-[slug] -m "Merge story [ID]: [title]"
+      ```
+   5. Free the slot **before** completion so the next schedule can use it:
+      `git -C [SLOT] checkout --detach`; mark the slot free, remove the id
+      from `IN_FLIGHT`. Keep the branch for now — step 0's backstop uses its
+      existence to detect a merge whose completion never ran.
+   6. Run **EPIC-4c (concurrent variant)** in the main root, then
+      `git branch -d feature/[ID]-[slug]`, append `DONE` to the ledger, print
+      the story line, go to step 1.
+
+6. **Exit.** When `IN_FLIGHT` is empty and `startable` is empty → the epic is
+   drained. Any `held` entries at that point are stories waiting on a
+   quarantined story; list them in EPIC-5 as *not started (waits on [ID])*.
+   ALL_MODE: if nothing was quarantined, move to the next epic via step 1a;
+   otherwise go to EPIC-5.
+
+Progress lines carry the slot: `▶ S[N] [ID] [Title] … [DONE | BLOCKED]  ([note])`
+(ALL_MODE: `▶ S[N] [EPIC_ID]/[ID] …`).
+
 ## EPIC-4: Worker subagent contract (implementation + testing only)
 
 Spawn **one worker per story** using the Agent tool with the **story-worker**
@@ -1179,7 +1353,8 @@ definition.
 Pass the worker this prompt (fill in the brackets):
 
 > You are implementing ONE story autonomously as part of an epic run.
-> Project root: `[ROOT]`. Story: `[ID]` in epic `[EPIC_ID]`. Mode: `[start|resume]`. Merge branch: `[MERGE_BRANCH]` (use this instead of `main` for all git diff, git log, and branch-creation commands).
+> Project root: `[ROOT]`. Story: `[ID]` in epic `[EPIC_ID]`. Mode: `[start|resume|slot]`. Merge branch: `[MERGE_BRANCH]` (use this instead of `main` for all git diff, git log, and branch-creation commands).
+> [Concurrent mode only:] Slot: `[SLOT]` — work only inside this worktree; your branch `feature/[ID]-[slug]` is already checked out there. Follow your agent definition's `slot` mode rules (no activation, no ledger writes, Tier 1 only). Declared outputs: `[outputs from the story JSON]`.
 >
 > Execute the `/solution` skill's **Phases 1 through 5a (Two-Tier Testing)** exactly
 > as written in `~/.claude/skills/solution/skill.md`, then STOP. Do NOT run code
@@ -1216,6 +1391,8 @@ trusting it: confirm the feature branch exists with commits and a clean tree.
 ```bash
 cd $(git rev-parse --show-toplevel) && git rev-parse --verify feature/[ID]-[slug] >/dev/null 2>&1 && git log --oneline [MERGE_BRANCH]..feature/[ID]-[slug] | head && git status --porcelain
 ```
+(Concurrent mode: run the `log` and `status` with `git -C [SLOT]` so the
+clean-tree check looks at the worktree the worker used.)
 If the branch is missing, has no commits, or the worker reported `IMPLEMENTED` but
 tests as `fail`, treat it as `BLOCKED` (note: "worker reported success but branch
 not ready") and stop the loop.
@@ -1232,6 +1409,14 @@ agents see the changes:
 ```bash
 cd $(git rev-parse --show-toplevel) && git checkout feature/[ID]-[slug]
 ```
+**Concurrent variant:** do **not** check anything out in the main root (it
+stays on `[MERGE_BRANCH]`). Instead give every reviewer the slot path and tell
+it, verbatim: "Work from `[SLOT]` — `cd` there first; run every git and test
+command from that directory; the diff to review is
+`git diff [MERGE_BRANCH]..HEAD` run there." The documentation-writer commits
+its doc updates in the slot on the feature branch, same as it would on a
+checkout. Reviewers for different stories may run at the same time; the
+rework budget and verdict rules are per story and unchanged.
 
 - **Independent test review (risk-tiered, optional).** The worker already wrote and
   ran tier-1 + tier-2 tests, and EPIC-4c re-runs the full suite as a backstop — so
@@ -1312,6 +1497,14 @@ command** logic from the main thread (the worker did NOT do this):
   - `true` → STOP before merge and present the preview at **EPIC-3a**; merge only
     on approval.
 
+**Concurrent variant (EPIC-3c step 5.6):** the merge already happened in the
+merge queue and Tier 2 already ran on the integrated branch, so from the list
+above: skip step 3 (full-suite backstop) entirely; skip step 9 (merge); run
+steps 4–8 and 11–12 in the **main root on `[MERGE_BRANCH]`**, where the merged
+`local.md` and `plan.md` now live. Steps 8 and 11 collapse into one commit
+(`Complete story [ID]: [title]`) directly on `[MERGE_BRANCH]`; that is the
+single-writer rule at work, not a shortcut.
+
 After completion, sanity-check the story is actually `done` before looping:
 ```bash
 cd $(git rev-parse --show-toplevel) && python3 ~/.claude/skills/solution-factory/scripts/story_resolver.py list --epic [EPIC_ID] --status done | python3 -c "import sys,json; print([s['id'] for s in json.load(sys.stdin)['stories']])"
@@ -1334,12 +1527,20 @@ git add .solution-factory/epics/[EPIC_ID]/[EPIC_ID].json
 git commit -m "Finalize epic [EPIC_ID] run status"
 ```
 
+**Concurrent mode teardown:** remove the slots; keep the branches of
+quarantined stories so `/solution next` or an interactive `/solution resume`
+can pick them up.
+```bash
+cd $(git rev-parse --show-toplevel) && for w in .sf-worktrees/slot-*/; do git worktree remove --force "$w"; done; git worktree prune
+```
+
 Print a table and next steps. Single-epic mode:
 ```
 Autonomous run complete — [EPIC_ID]
   ✓ [ID] [Title]
   ✓ [ID] [Title]
   ✗ [ID] [Title] — BLOCKED: [reason]   (if any)
+  · [ID] [Title] — not started (waits on [blocked ID])   (concurrent mode, if any)
 
 Done: [X]/[N]   Blocked: [Y]   Remaining backlog: [Z]
 ```
@@ -1391,7 +1592,10 @@ the open question and re-run `/solution epic [EPIC_ID]`; split the story via
 `/create-stories`; or implement it interactively with `/solution start [ID]`).
 In ALL_MODE, the blocker stops the entire cross-epic run, not just the epic it
 occurred in — any later epics that were queued but not yet reached are left
-untouched, exactly as they were before the run started.
+untouched, exactly as they were before the run started. (Concurrent mode: the
+blocker only quarantines that story within its epic — every independent story
+in the same epic still ran to completion — but the run still does not advance
+to the next epic.)
 
 **If the epic is fully done**, the last story's EPIC-4c completion already flipped
 the epic to `completed` (complete step 12). Confirm and suggest `/create-stories`
@@ -1400,12 +1604,21 @@ now `completed`, say so explicitly (e.g. "All ready epics complete").
 
 ## Epic-runner rules
 
-- **Sequential only** — never run stories in parallel (dependencies + shared git
-  history), and in ALL_MODE never run two epics in parallel either — one story,
-  in one epic, at a time, across the whole run.
-- **Stop on first blocker** — predictable over "maximize throughput." In
-  ALL_MODE this means the first blocker anywhere halts the whole run, not just
-  the epic it happened in.
+- **One epic at a time, file-disjoint stories within it** — in sequential mode
+  (`--sequential`, `--review-merges`, or `max_concurrent = 1`) exactly one story
+  runs at a time. In concurrent mode, stories run together only when
+  `schedule_stories.py` proves their declared outputs share no file; a story
+  without outputs runs alone. Never run two epics in parallel in either mode.
+- **Single writer** — in concurrent mode the main root stays on
+  `[MERGE_BRANCH]`; only the orchestrator writes `.solution-factory/` (workers
+  touch just their own `plan.md`/`local.md`) and only the orchestrator merges,
+  one story at a time through the merge queue. No locks are needed because
+  nothing else writes.
+- **Stop on first blocker (sequential) / quarantine (concurrent)** — sequential
+  mode stops the loop at the first blocker, predictable over "maximize
+  throughput." Concurrent mode leaves the blocked story `active`, frees its
+  slot, and drains everything that doesn't depend on it; in ALL_MODE either
+  way the run does not advance to the next epic after a blocker.
 - **Split of duties** — the worker owns implementation + testing (its heavy
   exploration/diff context dies with it); the orchestrator owns the independent
   review/security/docs gauntlet and completion, holding only the ledger and
