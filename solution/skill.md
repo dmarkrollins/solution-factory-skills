@@ -1248,6 +1248,14 @@ cd $(git rev-parse --show-toplevel) && git checkout feature/[ID]-[slug]
   independent and read-only against the same frozen `[MERGE_BRANCH]..feature/[ID]-[slug]`
   diff, so there is no reason to serialize them. Collect both verdicts before
   deciding.
+  - Neither reviewer should independently re-run the full test suite as part of
+    its review — this is enforced in their own agent definitions
+    (`code-reviewer.md`, `security-engineer.md`). The worker's reported
+    `tier2=pass`, the risk-tiered `test-engineer` pass above (when run), and
+    EPIC-4c's conditional full-suite backstop already cover verification.
+    Redundant suite runs from parallel reviewers buy no additional confidence
+    and risk colliding on a shared test port with each other or with a
+    concurrently-running `test-engineer`.
 - **If any of the spawned reviewers returns NEEDS REWORK** (test-engineer included,
   when run) → re-spawn the **story-worker in `rework` mode** on the same branch,
   passing the combined Critical/Important/High findings verbatim. The worker fixes,
