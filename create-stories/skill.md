@@ -52,11 +52,14 @@ WHAT IT DOES
      stories whose AC restate a dependency's AC (require_tests means the
      implementing story already ships those tests)
   5. Scores each story on 4 dimensions; splits any that exceed the threshold
-  6. Sequences stories by dependency order (foundation → vertical slices →
+  6. Declares each story's file outputs (files it creates / modifies) so
+     /solution epic can run file-disjoint stories concurrently
+  7. Sequences stories by dependency order (foundation → vertical slices →
      enhancements → integrations)
-  7. Evaluates each story against ADRs, constraints, and capsules
-  8. Writes story JSON, epic JSON, and updates sequence.json
-  9. Validates and presents the epic for your review
+  8. Evaluates each story against ADRs, constraints, and capsules
+  9. Writes story JSON, epic JSON, and updates sequence.json
+ 10. Validates and presents the epic for your review, flagging hot files
+     that several stories modify (those stories can't run concurrently)
 
 STORY SCORING
   Change Surface   0–3  (file | layer | stack | cross-stack)
@@ -83,6 +86,8 @@ KEY PRINCIPLES
   Tests travel with   never a standalone "test <feature X>" story when the
   their feature       feature story's require_tests already covers it
   Foundation first    models/schema/core before feature slices
+  Declare outputs     every story lists the files it creates/modifies;
+                      stories that share a file run one at a time
   IDs are numeric     no letter suffixes (01.001, 01.002 — never 01.001a)
   Execution order     array position in sequence.json, NOT numeric sort
 
@@ -117,6 +122,7 @@ NEXT STEP
 - Vertical slicing — not horizontal layers. This includes the **"build it, then test it" pairing**: never draft a standalone "write/verify tests for `<feature X>`" story for a feature whose tests a dependency story is already obligated to ship (see `stories.require_tests` in `config.json` and the cross-story duplication pre-filter in step 4a.6). Tests for a feature's own behaviors belong inside that feature's story — a downstream twin restates the same AC and is structurally redundant, not added coverage (see adr-014).
 - Story execution order = array position in `sequence.json`, NOT numerical sort
 - Story IDs are numeric only (never letter suffixes)
+- Every story declares `outputs: {create, modify}` (step 4c.5) — `/solution epic` runs stories concurrently only when their declared files don't overlap
 
 > **Why the per-epic cap:** epics run autonomously via `/solution epic`, where the main-thread orchestrator accumulates a small ledger entry per story. Capping the count keeps that growth bounded, keeps the blocker blast-radius small (the run stops on the first blocker), and keeps the EPIC-2 confirmation manifest reviewable.
 
@@ -221,6 +227,7 @@ Prompt the agent to draft vertically-sliced stories — **no more than `max_stor
 - **Progressive enhancement** — happy path → validation → error handling → edge cases
 - Score each story on all 4 dimensions; flag any that exceed threshold for splitting
 - List dependencies between stories (which stories must complete first)
+- For each story, list the repo-relative files it will **create** and the existing files it will **modify** (test files included) — the agent is already reasoning about change surface to score complexity, so this is the same reasoning written down. Finalized in step 4c.5.
 - Suggest which ADR/constraint IDs apply to each story
 
 Review the agent's draft — challenge complexity scores, split any over-threshold stories, reorder dependencies as needed. Use this draft as input for steps 4b–4e rather than drafting from scratch.
@@ -284,6 +291,25 @@ A healthy epic has a mix of complexity scores (1s, 2s, and a few 3s). An epic wh
 
 For any story exceeding threshold, split along the highest-scoring dimension. Re-score after splitting. Repeat until all stories ≤ threshold.
 
+### 4c.5. Declare File Outputs
+
+**MANDATORY — runs after splitting, since a split changes which files each story touches.**
+
+For every story, finalize `outputs` from the 4a draft and the codebase:
+
+```json
+"outputs": {
+  "create": ["src/api/routes/export.py", "tests/api/test_export.py"],
+  "modify": ["src/api/router.py"]
+}
+```
+
+- Paths are repo-relative; include test files; `modify` lists existing files, `create` lists new ones.
+- Verify each `modify` path exists (Glob) and each `create` path does not. A wrong guess isn't fatal — an undeclared write surfaces as a merge conflict and is reworked — but the declaration is only useful when it's honest.
+- Every story gets an `outputs` block. A story that genuinely touches no repo files (pure investigation) may omit it; it will then run alone.
+
+`/solution epic` uses `outputs` to run stories concurrently: two in-flight stories must not share a declared file. So when several stories `modify` the same file, they can never run at the same time. If that file is central to the epic (e.g. "async-convert N handlers in `utilityMethods.js`" as N stories), consider splitting by file instead of by handler. Validation (5f) reports these hot files as warnings; surface them in Step 6.
+
 ### 4d. Sequence with Dependencies
 
 1. Identify foundation stories (no dependencies)
@@ -341,7 +367,7 @@ python3 ~/.claude/skills/solution-factory/scripts/scaffold_structure.py story --
 For each story, prepare JSON and generate the story file:
 ```bash
 python3 ~/.claude/skills/solution-factory/scripts/story_templates.py generate-yaml \
-  --data '{"id":"NN.NNN","title":"...","epic":"epic-NN","goal":"...","acceptance":[...],"complexity":N,"dependencies":[...],"decisions":[...],"constraints":[...],"context":[...]}' \
+  --data '{"id":"NN.NNN","title":"...","epic":"epic-NN","goal":"...","acceptance":[...],"complexity":N,"dependencies":[...],"outputs":{"create":[...],"modify":[...]},"decisions":[...],"constraints":[...],"context":[...]}' \
   --output '.solution-factory/epics/epic-NN/stories/backlog/NN.NNN/NN.NNN.json'
 ```
 
@@ -365,13 +391,13 @@ python3 ~/.claude/skills/solution-factory/scripts/generate_sequence.py add-story
 python3 ~/.claude/skills/solution-factory/scripts/validate_stories.py --epic epic-NN
 ```
 
-If validation fails, fix issues and re-validate.
+If validation fails, fix issues and re-validate. Keep the result's `warnings` list — Step 6 prints it.
 
 ---
 
 ## Step 6: Present Summary
 
-Display (add a `Promoted from: IDEA-NNN` line if this run used `--from-idea`):
+Display (add a `Promoted from: IDEA-NNN` line if this run used `--from-idea`; the `Concurrency notes` block is the validator's `warnings` list verbatim — omit the block when it's empty):
 ```
 Epic [NN]: [Title]
 
@@ -390,6 +416,8 @@ Context References:
   Capsules: [list of capsule topics referenced]
 
 Validation: PASSED
+Concurrency notes:
+  - Epic epic-NN: hot file src/utils.py is modified by 3 stories (NN.001, NN.002, NN.003) — they will never run concurrently; consider splitting by file
 ```
 
 Ask: **"Review this epic. Approve, or request changes?"**

@@ -467,6 +467,57 @@ class TestStoryTemplates:
         result = st.update_epic_yaml(str(proj / "nonexistent.yaml"), root=str(proj))
         assert "error" in result
 
+    # -- outputs: {create, modify} ------------------------------------------
+
+    def _write_with_outputs(self, proj, outputs):
+        st = _modules["story_templates"]
+        out = proj / "story.json"
+        data = make_minimal_story_data("01.001", "epic-01")
+        if outputs is not None:
+            data["outputs"] = outputs
+        result = st.generate_story_yaml(data, str(out))
+        written = json.loads(out.read_text()) if out.exists() else None
+        return result, written
+
+    def test_outputs_written_in_create_modify_shape(self, proj):
+        result, written = self._write_with_outputs(
+            proj, {"create": ["src/new.py"], "modify": ["src/app.py", "tests/test_app.py"]}
+        )
+        assert result["success"] is True
+        assert written["outputs"] == {
+            "create": ["src/new.py"],
+            "modify": ["src/app.py", "tests/test_app.py"],
+        }
+
+    def test_outputs_missing_key_defaults_to_empty_list(self, proj):
+        result, written = self._write_with_outputs(proj, {"modify": ["src/app.py"]})
+        assert result["success"] is True
+        assert written["outputs"] == {"create": [], "modify": ["src/app.py"]}
+
+    def test_outputs_paths_stripped_and_deduplicated(self, proj):
+        result, written = self._write_with_outputs(
+            proj, {"create": [" src/a.py ", "src/a.py", ""], "modify": []}
+        )
+        assert result["success"] is True
+        assert written["outputs"] == {"create": ["src/a.py"], "modify": []}
+
+    def test_outputs_omitted_when_absent_or_empty(self, proj):
+        _, written = self._write_with_outputs(proj, None)
+        assert "outputs" not in written
+        _, written = self._write_with_outputs(proj, {"create": [], "modify": []})
+        assert "outputs" not in written
+
+    def test_outputs_rejects_plain_list(self, proj):
+        result, written = self._write_with_outputs(proj, ["src/app.py"])
+        assert "error" in result and "outputs" in result["error"]
+        assert written is None
+
+    def test_outputs_rejects_unknown_keys_and_non_string_paths(self, proj):
+        result, _ = self._write_with_outputs(proj, {"delete": ["x"]})
+        assert "error" in result and "unknown keys" in result["error"]
+        result, _ = self._write_with_outputs(proj, {"modify": [42]})
+        assert "error" in result and "outputs.modify" in result["error"]
+
 
 # ---------------------------------------------------------------------------
 # 5. story_resolver
@@ -718,6 +769,74 @@ class TestValidateStories:
         result = vs.validate(epic_id="epic-01", root=str(proj))
         assert result["valid"] is True
         assert result["stories_checked"] == 1
+
+    # -- outputs shape, missing-outputs warning, hot-file warning ------------
+
+    def _bootstrap_with_outputs(self, proj, stories):
+        """stories: list of (story_id, status, outputs-or-None)."""
+        gs = _modules["generate_sequence"]
+        scaffold = _modules["scaffold_structure"]
+        scaffold.create_epic(1, root=str(proj))
+        gs.add_epic("epic-01", root=str(proj))
+        for story_id, status, outputs in stories:
+            data = make_minimal_story_data(story_id, "epic-01")
+            if outputs is not None:
+                data["outputs"] = outputs
+            write_story_yaml(proj, "epic-01", story_id, status, story_data=data)
+            gs.add_story("epic-01", story_id, root=str(proj))
+            if status != "backlog":
+                gs.update_status(story_id, status, root=str(proj))
+        return _modules["validate_stories"].validate(epic_id="epic-01", root=str(proj))
+
+    def test_well_formed_outputs_pass_without_warnings(self, proj):
+        result = self._bootstrap_with_outputs(proj, [
+            ("01.001", "backlog", {"create": ["src/a.py"], "modify": ["src/app.py"]}),
+            ("01.002", "backlog", {"create": [], "modify": ["src/b.py"]}),
+        ])
+        assert result["valid"] is True
+        assert result["warnings"] == []
+
+    def test_outputs_shape_errors(self, proj):
+        result = self._bootstrap_with_outputs(proj, [
+            ("01.001", "backlog", ["src/a.py"]),
+            ("01.002", "backlog", {"modify": "src/b.py"}),
+            ("01.003", "backlog", {"create": ["/abs/path.py", "../escape.py", ""]}),
+            ("01.004", "backlog", {"remove": ["x"]}),
+        ])
+        assert result["valid"] is False
+        errs = "\n".join(result["errors"])
+        assert "01.001 outputs must be an object" in errs
+        assert "01.002 outputs.modify must be a list" in errs
+        assert "01.003 outputs.create path must be repo-relative: /abs/path.py" in errs
+        assert "01.003 outputs.create path must be repo-relative: ../escape.py" in errs
+        assert "01.003 outputs.create contains a non-string or empty path" in errs
+        assert "01.004 outputs has unknown keys: ['remove']" in errs
+
+    def test_missing_outputs_warns_for_open_stories_only(self, proj):
+        result = self._bootstrap_with_outputs(proj, [
+            ("01.001", "done", None),
+            ("01.002", "backlog", None),
+            ("01.003", "active", None),
+            ("01.004", "backlog", {"modify": ["src/x.py"]}),
+        ])
+        assert result["valid"] is True
+        missing = [w for w in result["warnings"] if "declare no outputs" in w]
+        assert len(missing) == 1
+        assert "2 open stories" in missing[0]
+        assert "01.002, 01.003" in missing[0]
+        assert "01.001" not in missing[0]
+
+    def test_hot_file_warning_names_file_and_stories(self, proj):
+        result = self._bootstrap_with_outputs(proj, [
+            ("01.001", "backlog", {"modify": ["src/utils.py"]}),
+            ("01.002", "backlog", {"modify": ["src/utils.py", "src/other.py"]}),
+            ("01.003", "backlog", {"modify": ["src/utils.py"]}),
+            ("01.004", "backlog", {"create": ["src/utils.py"]}),
+        ])
+        assert result["valid"] is True
+        hot = [w for w in result["warnings"] if "hot file" in w]
+        assert len(hot) == 1
+        assert "src/utils.py is modified by 3 stories (01.001, 01.002, 01.003)" in hot[0]
 
     # -- cross-epic dependency resolution ----------------------------------
     #
