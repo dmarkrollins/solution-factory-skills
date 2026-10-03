@@ -1,6 +1,6 @@
 # Plan: concurrent story processing for `/solution epic`
 
-Status: approved design, not yet implemented.
+Status: implemented. This is the original design record; see `concurrent-slot-processing.md` for how the built system works and how to migrate a lane-based implementation.
 Reference: `lane epic processing.jpeg`, a lane-based design from another codebase. This plan adapts the concept; it does not port the code. The original static-lane version of this plan was replaced by dynamic scheduling after measuring a real project (see Evidence).
 
 ## Decisions
