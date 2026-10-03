@@ -325,20 +325,22 @@ YAGNI Pre-Filter:
 
 Re-score the story based on the YAGNI-filtered scope (not the original story text). The exclusion list may have removed significant work — the re-assessed score must reflect that.
 
+Use the same 1-based scale `/create-stories` uses (its step 4b holds the full rubric): **complexity = 1 + dimension points**, a whole number from **1** (lowest) to the configured `complexity.threshold` (highest, default 3). Dimension points: Change Surface 0–3, Implementation 0–3, Uncertainty 0–2, Scope 0–2. A dimension scored 0 adds nothing; it never makes the story "complexity 0". **Never report a complexity of 0.** Stories written before the 1-based scale may carry an original score of 0; re-assess them on the new scale and note the change.
+
 ```
 Complexity Re-Assessment:
   Original: [N]
-  After YAGNI: [M]
-  Change Surface: [score]  ← files/systems actually touched after exclusions
-  Implementation: [score]  ← effort for what remains
-  Uncertainty: [score]     ← unknowns in the remaining scope only
-  Scope: [score]           ← breadth of the YAGNI-filtered work
+  After YAGNI: [M]            ← 1 + points below; 1 to threshold
+  Change Surface: [points]    ← files/systems actually touched after exclusions
+  Implementation: [points]    ← effort for what remains
+  Uncertainty: [points]       ← unknowns in the remaining scope only
+  Scope: [points]             ← breadth of the YAGNI-filtered work
   Note: [what YAGNI removed that drove the score down/up]
 ```
 
 - If score unchanged → document why exclusions didn't affect complexity
 - If score dropped → this is expected; proceed with confidence
-- If score > 3 after YAGNI → **MUST offer to split** — do not proceed without resolution
+- If score > threshold after YAGNI → **MUST offer to split** — do not proceed without resolution
 
 ### 3d. Requirements Interview
 
@@ -1350,6 +1352,13 @@ review, complete, or merge. Its autonomous overrides (plan auto-approval, no-hum
 interview resolution, inline implementation/testing) are pre-baked in its agent
 definition.
 
+**Every Agent call in the epic loop — this worker and every EPIC-4b reviewer —
+must pass an explicit `name`** (e.g. `worker-[ID]`, `review-[ID]`,
+`secreview-[ID]`, `testreview-[ID]`, `docs-[ID]`; append `-2`, `-3`, … for a
+rework/re-review cycle to avoid a name collision with the still-idle prior
+instance). This is what makes the cleanup rule below possible — an unnamed
+agent can't be cleanly targeted by `TaskStop`.
+
 Pass the worker this prompt (fill in the brackets):
 
 > You are implementing ONE story autonomously as part of an epic run.
@@ -1396,6 +1405,13 @@ clean-tree check looks at the worktree the worker used.)
 If the branch is missing, has no commits, or the worker reported `IMPLEMENTED` but
 tests as `fail`, treat it as `BLOCKED` (note: "worker reported success but branch
 not ready") and stop the loop.
+
+**Stop the worker once its result is sanity-checked and logged:**
+`TaskStop({task_id: "worker-[ID]"})`. It is never resumed via `SendMessage` in
+this workflow — a rework cycle always spawns a fresh worker (EPIC-4b) rather
+than continuing this one — so leaving it idle afterward only accumulates
+resident agents with nothing left to do. Stop it whether the result was
+`IMPLEMENTED` or `BLOCKED`.
 
 ## EPIC-4b: Quality gauntlet (orchestrator-run, independent agents)
 
@@ -1453,6 +1469,14 @@ rework budget and verdict rules are per story and unchanged.
   **Set `REWORKED = true` for this story if ≥1 rework cycle ran** — EPIC-4c uses
   this to decide whether the full-suite backstop is needed.
 - Once code review AND security review are clean → run 5b (if enabled) and 5b.5.
+- **Stop each reviewer agent once its verdict is captured and logged** —
+  `TaskStop({task_id: "review-[ID]"})`, `secreview-[ID]`, `testreview-[ID]`,
+  `docs-[ID]`, whichever ran. Do this immediately after reading the verdict,
+  including a `NEEDS REWORK` one: re-review after a rework cycle always spawns
+  a fresh, differently-named reviewer (per EPIC-4's naming rule) rather than
+  resuming the one that just returned, so nothing is lost by stopping it right
+  away. By the time a story reaches EPIC-4c, no agent from its gauntlet should
+  still be idle.
 
 This gives reviews their specialization **and** author≠reviewer independence — the
 reviewer never sees the worker's reasoning, only the committed diff.
@@ -1631,4 +1655,10 @@ now `completed`, say so explicitly (e.g. "All ready epics complete").
   the loop is rejected or denied before the agent runs, show the user the raw
   rejection/denial text (including any classifier `Reason:`) before asking how
   to proceed. See EPIC-4 for the exact handling.
+- **No idle agents left behind** — every worker and reviewer is spawned with
+  an explicit name (EPIC-4) and stopped with `TaskStop` right after its result
+  is consumed (EPIC-4/EPIC-4b), because none of them are ever resumed via
+  `SendMessage` in this workflow. A run of N stories should exit EPIC-5 with
+  zero idle teammates from this epic, not a pile the user has to clean up by
+  hand.
 

@@ -705,6 +705,36 @@ class TestValidateStories:
         assert result["valid"] is False
         assert any("complexity" in e.lower() for e in result["errors"])
 
+    def test_complexity_zero_fails_for_open_story(self, proj):
+        self._bootstrap(proj, [("01.001", "backlog", [], 0)])
+        vs = _modules["validate_stories"]
+        result = vs.validate(root=str(proj))
+        assert result["valid"] is False
+        assert any("minimum of 1" in e for e in result["errors"])
+
+    def test_complexity_zero_allowed_for_done_story(self, proj):
+        # Done stories scored before the 1-based scale are grandfathered.
+        self._bootstrap(proj, [("01.001", "done", [], 0)])
+        vs = _modules["validate_stories"]
+        result = vs.validate(root=str(proj))
+        assert result["valid"] is True
+
+    def test_complexity_at_bounds_passes(self, proj):
+        self._bootstrap(
+            proj,
+            [("01.001", "backlog", [], 1), ("01.002", "backlog", [], 3)],
+        )
+        vs = _modules["validate_stories"]
+        result = vs.validate(root=str(proj))
+        assert result["valid"] is True
+
+    def test_non_integer_complexity_fails(self, proj):
+        self._bootstrap(proj, [("01.001", "backlog", [], 1.5)])
+        vs = _modules["validate_stories"]
+        result = vs.validate(root=str(proj))
+        assert result["valid"] is False
+        assert any("whole number" in e for e in result["errors"])
+
     def test_forward_dependency_fails(self, proj):
         gs = _modules["generate_sequence"]
         scaffold = _modules["scaffold_structure"]
@@ -2686,6 +2716,26 @@ class TestIdeaPlanCheck:
         result = checker.check_plan("IDEA-001", root=str(tmp_path))
         assert result["technical_approach_present"] is True
         assert result["warnings"] == []
+
+
+    def test_delivery_planning_language_is_warned(self, tmp_path):
+        checker = _modules["idea_plan_check"]
+        store = _modules["idea_store"]
+        store.add("First idea", root=str(tmp_path))
+        plan_path = tmp_path / ".solution-factory" / "ideas" / "IDEA-001" / "plan.md"
+        plan_path.write_text(
+            "## Technical Approach\n\n"
+            "**Phase 1: membership**\n\nEach phase is epic-sized. The docs ship with the phase.\n"
+        )
+        result = checker.check_plan("IDEA-001", root=str(tmp_path))
+        reasons = " ".join(w["reason"] for w in result["warnings"])
+        assert "phase label" in reasons
+        assert "size estimate" in reasons
+
+    def test_deferring_to_story_sizing_is_not_flagged(self):
+        checker = _modules["idea_plan_check"]
+        text = "Open question: exact split is for a later story-sizing pass to settle."
+        assert checker.find_delivery_planning_language(text) == []
 
 
 # ---------------------------------------------------------------------------

@@ -51,7 +51,8 @@ WHAT IT DOES
   4. Runs a cross-story duplication filter — merges or rewrites "test twin"
      stories whose AC restate a dependency's AC (require_tests means the
      implementing story already ships those tests)
-  5. Scores each story on 4 dimensions; splits any that exceed the threshold
+  5. Scores each story from 1 to the threshold (1 + dimension points); splits
+     any that exceed the threshold
   6. Declares each story's file outputs (files it creates / modifies) so
      /solution epic can run file-disjoint stories concurrently
   7. Sequences stories by dependency order (foundation → vertical slices →
@@ -62,11 +63,20 @@ WHAT IT DOES
      that several stories modify (those stories can't run concurrently)
 
 STORY SCORING
+  Complexity is a whole number from 1 to complexity.threshold (default 3).
+  1 is the lowest possible score; 0 is never a valid complexity.
+
+    complexity = 1 + (dimension points)
+
+  Dimension points (each starts at 0 = "adds nothing"):
   Change Surface   0–3  (file | layer | stack | cross-stack)
   Implementation   0–3  (copy | familiar | new pattern | new arch)
   Uncertainty      0–2  (clear | minor unknowns | significant unknowns)
   Scope            0–2  (1-2 AC | 3-4 AC | 5+ AC)
-  Sum must be ≤ complexity.threshold — stories over threshold are split, no exceptions.
+
+  With threshold 3: complexity 1 = 0 points (trivial), 2 = 1 point,
+  3 = 2 points. A story with 3+ points scores above the threshold and MUST
+  be split, no exceptions.
 
   Implementation calibration (most commonly over-scored):
     I=0  Adding a field to an interface, removing an import, prop drilling,
@@ -117,7 +127,7 @@ NEXT STEP
 ```
 
 **Key principles:**
-- Stories MUST have complexity ≤ threshold from `config.json` (default: 3)
+- Story complexity is a whole number from **1** (lowest) to the threshold in `config.json` (default: 3, highest), computed as `1 + dimension points` (step 4b). Never record a complexity of 0 or above the threshold.
 - Each epic MUST have ≤ `stories.max_stories_per_epic` from `config.json` (default: 10) — larger scope splits into sequential epics, never one oversized epic
 - Vertical slicing — not horizontal layers. This includes the **"build it, then test it" pairing**: never draft a standalone "write/verify tests for `<feature X>`" story for a feature whose tests a dependency story is already obligated to ship (see `stories.require_tests` in `config.json` and the cross-story duplication pre-filter in step 4a.6). Tests for a feature's own behaviors belong inside that feature's story — a downstream twin restates the same AC and is structurally redundant, not added coverage (see adr-014).
 - Story execution order = array position in `sequence.json`, NOT numerical sort
@@ -218,14 +228,14 @@ Use Agent tool with subagent_type=Plan, **model=sonnet** to generate the initial
 - Full ADR and constraint reference inventory (IDs + titles from Step 2)
 - Existing epic count and the next epic number
 - Complexity threshold (from config.json, default 3)
-- Scoring rubric: Change Surface (0–3), Implementation (0–3), Uncertainty (0–2, max), Scope (0–2, max) — sum must be ≤ threshold
+- Scoring rubric: dimension points Change Surface (0–3), Implementation (0–3), Uncertainty (0–2, max), Scope (0–2, max); story complexity = 1 + total points, which must be between 1 and the threshold (so total points ≤ threshold − 1). Tell the agent explicitly that complexity 0 does not exist and the lowest story is 1.
 
 Prompt the agent to draft vertically-sliced stories — **no more than `max_stories_per_epic` (default 10) per epic** — following these principles:
 - **Foundation first** — models, schemas, core setup
 - **Vertical slices** — thin working features end-to-end
 - **Tests travel with their feature** — never draft a separate downstream "test `<feature>`" story; the feature's own AC (and its `require_tests` obligation) already cover its behaviors. A dedicated test story is only legitimate when it targets a genuine gap the feature story's AC doesn't name (e.g. integration wiring across components, regression suites, edge cases nobody specified) — and its AC must be phrased against that gap, not as a restatement of the feature story's AC.
 - **Progressive enhancement** — happy path → validation → error handling → edge cases
-- Score each story on all 4 dimensions; flag any that exceed threshold for splitting
+- Score each story on all 4 dimensions, report both the points and the resulting complexity (1 + points); flag any whose complexity exceeds the threshold for splitting
 - List dependencies between stories (which stories must complete first)
 - For each story, list the repo-relative files it will **create** and the existing files it will **modify** (test files included) — the agent is already reasoning about change surface to score complexity, so this is the same reasoning written down. Finalized in step 4c.5.
 - Suggest which ADR/constraint IDs apply to each story
@@ -261,9 +271,15 @@ State your duplication analysis (which dependency pairs were checked, what overl
 
 ### 4b. Score Complexity
 
-Score each story on 4 dimensions. Sum must be ≤ threshold (default 3).
+**Complexity is 1-based.** Every story's complexity is a whole number from 1 to the threshold (default 3). It is computed as:
 
-| Dimension | 0 | 1 | 2 | 3 |
+```
+complexity = 1 + ChangeSurface + Implementation + Uncertainty + Scope
+```
+
+The dimension columns below are *points added on top of the base of 1* — a dimension scored 0 adds nothing, it does not make the story "complexity 0". The smallest possible story (one file, copy/paste, no unknowns, 1–2 AC) is complexity **1**. **Never write `"complexity": 0`**, and never write a value above the threshold — with threshold 3, total points must be ≤ 2.
+
+| Dimension points | 0 | 1 | 2 | 3 |
 |-----------|---|---|---|---|
 | **Change Surface** | single file | single layer / package | full stack (frontend + backend) | cross-stack + infra |
 | **Implementation** | copy/paste | familiar pattern | new pattern for this codebase | new architecture |
@@ -287,9 +303,11 @@ After scoring all stories, count how many are at the complexity threshold. If **
 
 A healthy epic has a mix of complexity scores (1s, 2s, and a few 3s). An epic where every story scores at the threshold is almost always a calibration error, not a genuinely hard epic.
 
+Before moving on, confirm every story's recorded complexity is `1 + points` and falls in `1..threshold`. A 0 or a value above the threshold is a scoring error — fix it (split if above), do not write it.
+
 ### 4c. Split Over-Threshold Stories
 
-For any story exceeding threshold, split along the highest-scoring dimension. Re-score after splitting. Repeat until all stories ≤ threshold.
+For any story whose complexity (1 + points) exceeds the threshold, split along the highest-scoring dimension. Re-score after splitting. Repeat until every story is between 1 and the threshold.
 
 ### 4c.5. Declare File Outputs
 
@@ -456,6 +474,7 @@ The new story gets the **next available ID** (not renumbered). Array position de
 | No `.solution-factory/` | Tell user to run `/ideate`, STOP |
 | No docs/ADRs/constraints | Warn, suggest `/ideate`, allow override |
 | Complexity > threshold | MUST split, no exceptions |
+| Complexity of 0 (or not 1 + points) | Scoring error — recompute as 1 + points; the lowest valid complexity is 1 |
 | Validation fails | Show errors, fix, re-validate |
 | Duplicate story ID | Error from script, assign different ID |
 | Dependency cycle | Error from validation, fix deps |

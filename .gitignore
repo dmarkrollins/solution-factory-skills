@@ -35,3 +35,6 @@ ENV/
 .env
 .env.*
 *.secret
+
+# App-managed built-in skills (re-synced by Claude app)
+synced/

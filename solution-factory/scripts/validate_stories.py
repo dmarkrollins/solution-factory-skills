@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Validate story structure: numbering format, complexity within threshold,
+Validate story structure: numbering format, complexity from 1 to threshold,
 valid dependencies (no cycles, no forward refs), required fields, no duplicates.
 """
 
@@ -132,11 +132,24 @@ def validate(epic_id=None, root="."):
                     if field not in story_data:
                         errors.append(f"Story {sid} missing required field: {field}")
 
-                # Complexity check
+                # Complexity check. The scale is 1-based: complexity is
+                # 1 + dimension points, a whole number from 1 to threshold.
+                # Done stories written before the 1-based scale may still
+                # carry a 0, so the lower bound applies to open stories only.
                 complexity = story_data.get("complexity", 0)
-                if complexity > threshold:
+                if not isinstance(complexity, int) or isinstance(complexity, bool):
+                    errors.append(
+                        f"Story {sid} complexity {complexity!r} must be a whole number "
+                        f"from 1 to {threshold}"
+                    )
+                elif complexity > threshold:
                     errors.append(
                         f"Story {sid} complexity {complexity} exceeds threshold {threshold}"
+                    )
+                elif complexity < 1 and status != "done":
+                    errors.append(
+                        f"Story {sid} complexity {complexity} is below the minimum of 1 "
+                        f"(complexity is 1 + dimension points, from 1 to {threshold})"
                     )
 
                 # Declared outputs — optional, but when present the shape must

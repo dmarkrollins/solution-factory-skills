@@ -221,7 +221,7 @@ python3 ~/.claude/skills/solution-factory/scripts/capsule_generator.py
 ### 3e. Create config.json
 
 Ask the user for project-specific configuration values:
-- Complexity threshold (default: 3)
+- Complexity threshold (default: 3) — the highest story score; scores run from 1 up to it
 - Whether tests are required (default: true)
 - Wireframe path (if UX work is involved)
 - Default stack (framework, bundler, design system)
