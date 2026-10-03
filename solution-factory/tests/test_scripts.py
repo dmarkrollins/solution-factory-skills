@@ -67,6 +67,7 @@ _script_names = [
     "check_venv",
     "wireframe_linker",
     "epic_run_manager",
+    "schedule_stories",
     "idea_store",
     "idea_plan_check",
     "read_idea_plan",
@@ -188,6 +189,27 @@ class TestConfigLoader:
         assert "relevance" in cfg
         assert "stories" in cfg
         assert "ux" in cfg
+        assert "epic_run" in cfg
+
+    def test_epic_run_defaults(self, proj):
+        loader = _modules["config_loader"]
+        cfg = loader.load_config(root=str(proj))["config"]["epic_run"]
+        assert cfg == {
+            "max_concurrent": 3,
+            "shared_paths": [".solution-factory/**"],
+            "worktree_setup": None,
+        }
+
+    def test_epic_run_partial_override_keeps_other_defaults(self, proj):
+        loader = _modules["config_loader"]
+        cfg_path = proj / ".solution-factory" / "config.json"
+        cfg_path.write_text(json.dumps({
+            "epic_run": {"max_concurrent": 1, "worktree_setup": "npm ci"}
+        }))
+        cfg = loader.load_config(root=str(proj))["config"]["epic_run"]
+        assert cfg["max_concurrent"] == 1
+        assert cfg["worktree_setup"] == "npm ci"
+        assert cfg["shared_paths"] == [".solution-factory/**"]
 
     def test_deep_merge_override(self):
         loader = _modules["config_loader"]
@@ -467,6 +489,57 @@ class TestStoryTemplates:
         result = st.update_epic_yaml(str(proj / "nonexistent.yaml"), root=str(proj))
         assert "error" in result
 
+    # -- outputs: {create, modify} ------------------------------------------
+
+    def _write_with_outputs(self, proj, outputs):
+        st = _modules["story_templates"]
+        out = proj / "story.json"
+        data = make_minimal_story_data("01.001", "epic-01")
+        if outputs is not None:
+            data["outputs"] = outputs
+        result = st.generate_story_yaml(data, str(out))
+        written = json.loads(out.read_text()) if out.exists() else None
+        return result, written
+
+    def test_outputs_written_in_create_modify_shape(self, proj):
+        result, written = self._write_with_outputs(
+            proj, {"create": ["src/new.py"], "modify": ["src/app.py", "tests/test_app.py"]}
+        )
+        assert result["success"] is True
+        assert written["outputs"] == {
+            "create": ["src/new.py"],
+            "modify": ["src/app.py", "tests/test_app.py"],
+        }
+
+    def test_outputs_missing_key_defaults_to_empty_list(self, proj):
+        result, written = self._write_with_outputs(proj, {"modify": ["src/app.py"]})
+        assert result["success"] is True
+        assert written["outputs"] == {"create": [], "modify": ["src/app.py"]}
+
+    def test_outputs_paths_stripped_and_deduplicated(self, proj):
+        result, written = self._write_with_outputs(
+            proj, {"create": [" src/a.py ", "src/a.py", ""], "modify": []}
+        )
+        assert result["success"] is True
+        assert written["outputs"] == {"create": ["src/a.py"], "modify": []}
+
+    def test_outputs_omitted_when_absent_or_empty(self, proj):
+        _, written = self._write_with_outputs(proj, None)
+        assert "outputs" not in written
+        _, written = self._write_with_outputs(proj, {"create": [], "modify": []})
+        assert "outputs" not in written
+
+    def test_outputs_rejects_plain_list(self, proj):
+        result, written = self._write_with_outputs(proj, ["src/app.py"])
+        assert "error" in result and "outputs" in result["error"]
+        assert written is None
+
+    def test_outputs_rejects_unknown_keys_and_non_string_paths(self, proj):
+        result, _ = self._write_with_outputs(proj, {"delete": ["x"]})
+        assert "error" in result and "unknown keys" in result["error"]
+        result, _ = self._write_with_outputs(proj, {"modify": [42]})
+        assert "error" in result and "outputs.modify" in result["error"]
+
 
 # ---------------------------------------------------------------------------
 # 5. story_resolver
@@ -632,6 +705,36 @@ class TestValidateStories:
         assert result["valid"] is False
         assert any("complexity" in e.lower() for e in result["errors"])
 
+    def test_complexity_zero_fails_for_open_story(self, proj):
+        self._bootstrap(proj, [("01.001", "backlog", [], 0)])
+        vs = _modules["validate_stories"]
+        result = vs.validate(root=str(proj))
+        assert result["valid"] is False
+        assert any("minimum of 1" in e for e in result["errors"])
+
+    def test_complexity_zero_allowed_for_done_story(self, proj):
+        # Done stories scored before the 1-based scale are grandfathered.
+        self._bootstrap(proj, [("01.001", "done", [], 0)])
+        vs = _modules["validate_stories"]
+        result = vs.validate(root=str(proj))
+        assert result["valid"] is True
+
+    def test_complexity_at_bounds_passes(self, proj):
+        self._bootstrap(
+            proj,
+            [("01.001", "backlog", [], 1), ("01.002", "backlog", [], 3)],
+        )
+        vs = _modules["validate_stories"]
+        result = vs.validate(root=str(proj))
+        assert result["valid"] is True
+
+    def test_non_integer_complexity_fails(self, proj):
+        self._bootstrap(proj, [("01.001", "backlog", [], 1.5)])
+        vs = _modules["validate_stories"]
+        result = vs.validate(root=str(proj))
+        assert result["valid"] is False
+        assert any("whole number" in e for e in result["errors"])
+
     def test_forward_dependency_fails(self, proj):
         gs = _modules["generate_sequence"]
         scaffold = _modules["scaffold_structure"]
@@ -718,6 +821,74 @@ class TestValidateStories:
         result = vs.validate(epic_id="epic-01", root=str(proj))
         assert result["valid"] is True
         assert result["stories_checked"] == 1
+
+    # -- outputs shape, missing-outputs warning, hot-file warning ------------
+
+    def _bootstrap_with_outputs(self, proj, stories):
+        """stories: list of (story_id, status, outputs-or-None)."""
+        gs = _modules["generate_sequence"]
+        scaffold = _modules["scaffold_structure"]
+        scaffold.create_epic(1, root=str(proj))
+        gs.add_epic("epic-01", root=str(proj))
+        for story_id, status, outputs in stories:
+            data = make_minimal_story_data(story_id, "epic-01")
+            if outputs is not None:
+                data["outputs"] = outputs
+            write_story_yaml(proj, "epic-01", story_id, status, story_data=data)
+            gs.add_story("epic-01", story_id, root=str(proj))
+            if status != "backlog":
+                gs.update_status(story_id, status, root=str(proj))
+        return _modules["validate_stories"].validate(epic_id="epic-01", root=str(proj))
+
+    def test_well_formed_outputs_pass_without_warnings(self, proj):
+        result = self._bootstrap_with_outputs(proj, [
+            ("01.001", "backlog", {"create": ["src/a.py"], "modify": ["src/app.py"]}),
+            ("01.002", "backlog", {"create": [], "modify": ["src/b.py"]}),
+        ])
+        assert result["valid"] is True
+        assert result["warnings"] == []
+
+    def test_outputs_shape_errors(self, proj):
+        result = self._bootstrap_with_outputs(proj, [
+            ("01.001", "backlog", ["src/a.py"]),
+            ("01.002", "backlog", {"modify": "src/b.py"}),
+            ("01.003", "backlog", {"create": ["/abs/path.py", "../escape.py", ""]}),
+            ("01.004", "backlog", {"remove": ["x"]}),
+        ])
+        assert result["valid"] is False
+        errs = "\n".join(result["errors"])
+        assert "01.001 outputs must be an object" in errs
+        assert "01.002 outputs.modify must be a list" in errs
+        assert "01.003 outputs.create path must be repo-relative: /abs/path.py" in errs
+        assert "01.003 outputs.create path must be repo-relative: ../escape.py" in errs
+        assert "01.003 outputs.create contains a non-string or empty path" in errs
+        assert "01.004 outputs has unknown keys: ['remove']" in errs
+
+    def test_missing_outputs_warns_for_open_stories_only(self, proj):
+        result = self._bootstrap_with_outputs(proj, [
+            ("01.001", "done", None),
+            ("01.002", "backlog", None),
+            ("01.003", "active", None),
+            ("01.004", "backlog", {"modify": ["src/x.py"]}),
+        ])
+        assert result["valid"] is True
+        missing = [w for w in result["warnings"] if "declare no outputs" in w]
+        assert len(missing) == 1
+        assert "2 open stories" in missing[0]
+        assert "01.002, 01.003" in missing[0]
+        assert "01.001" not in missing[0]
+
+    def test_hot_file_warning_names_file_and_stories(self, proj):
+        result = self._bootstrap_with_outputs(proj, [
+            ("01.001", "backlog", {"modify": ["src/utils.py"]}),
+            ("01.002", "backlog", {"modify": ["src/utils.py", "src/other.py"]}),
+            ("01.003", "backlog", {"modify": ["src/utils.py"]}),
+            ("01.004", "backlog", {"create": ["src/utils.py"]}),
+        ])
+        assert result["valid"] is True
+        hot = [w for w in result["warnings"] if "hot file" in w]
+        assert len(hot) == 1
+        assert "src/utils.py is modified by 3 stories (01.001, 01.002, 01.003)" in hot[0]
 
     # -- cross-epic dependency resolution ----------------------------------
     #
@@ -2236,6 +2407,54 @@ class TestEpicRunManager:
         assert result["run"]["stopped_at"] is None
         assert result["run"]["current_story"] is None
 
+    def test_start_run_defaults_to_sequential_mode(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        result = erm.start_run("epic-01", review_merges=False, root=str(proj))
+        assert result["run"]["mode"] == "sequential"
+
+    def test_start_run_concurrent_mode(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        result = erm.start_run("epic-01", review_merges=False, root=str(proj), mode="concurrent")
+        assert result["run"]["mode"] == "concurrent"
+
+    def test_start_run_rejects_unknown_mode(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        assert "error" in erm.start_run("epic-01", review_merges=False, root=str(proj), mode="lanes")
+
+    def test_resume_run_keeps_mode_and_review_merges(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        erm.start_run("epic-01", review_merges=True, root=str(proj), mode="concurrent")
+        erm.update_current_story("epic-01", "01.002", root=str(proj))
+        erm.stop_run("epic-01", root=str(proj))
+        result = erm.resume_run("epic-01", root=str(proj))
+        assert result["success"] is True
+        run = result["run"]
+        assert run["status"] == "active"
+        assert run["stopped_at"] is None
+        assert run["mode"] == "concurrent"
+        assert run["review_merges"] is True
+        assert run["current_story"] == "01.002"
+
+    def test_resume_run_backfills_mode_on_old_run_blocks(self, proj):
+        self._write_epic_json(proj, "epic-01", extra={"run": {
+            "status": "stopped", "review_merges": False, "started_at": "x",
+            "stopped_at": "y", "current_story": None}})
+        erm = _modules["epic_run_manager"]
+        result = erm.resume_run("epic-01", root=str(proj))
+        assert result["run"]["mode"] == "sequential"
+
+    def test_resume_run_errors_without_run_or_when_complete(self, proj):
+        self._write_epic_json(proj, "epic-01")
+        erm = _modules["epic_run_manager"]
+        assert "error" in erm.resume_run("epic-01", root=str(proj))
+        erm.start_run("epic-01", review_merges=False, root=str(proj))
+        erm.complete_run("epic-01", root=str(proj))
+        assert "error" in erm.resume_run("epic-01", root=str(proj))
+
     def test_start_run_review_merges_true(self, proj):
         self._write_epic_json(proj, "epic-01")
         erm = _modules["epic_run_manager"]
@@ -2499,6 +2718,26 @@ class TestIdeaPlanCheck:
         assert result["warnings"] == []
 
 
+    def test_delivery_planning_language_is_warned(self, tmp_path):
+        checker = _modules["idea_plan_check"]
+        store = _modules["idea_store"]
+        store.add("First idea", root=str(tmp_path))
+        plan_path = tmp_path / ".solution-factory" / "ideas" / "IDEA-001" / "plan.md"
+        plan_path.write_text(
+            "## Technical Approach\n\n"
+            "**Phase 1: membership**\n\nEach phase is epic-sized. The docs ship with the phase.\n"
+        )
+        result = checker.check_plan("IDEA-001", root=str(tmp_path))
+        reasons = " ".join(w["reason"] for w in result["warnings"])
+        assert "phase label" in reasons
+        assert "size estimate" in reasons
+
+    def test_deferring_to_story_sizing_is_not_flagged(self):
+        checker = _modules["idea_plan_check"]
+        text = "Open question: exact split is for a later story-sizing pass to settle."
+        assert checker.find_delivery_planning_language(text) == []
+
+
 # ---------------------------------------------------------------------------
 # 22. read_idea_plan
 # ---------------------------------------------------------------------------
@@ -2543,3 +2782,181 @@ class TestReadIdeaPlan:
         assert result["title"] == "First idea"
         assert "body" in result
         assert "bounded-concurrency queue" in result["technical_approach"]
+
+
+# ---------------------------------------------------------------------------
+# schedule_stories
+# ---------------------------------------------------------------------------
+
+
+class TestScheduleStories:
+    def _bootstrap(self, proj, stories, config=None, epic="epic-01"):
+        """stories: list of (story_id, status, deps, outputs-or-None)."""
+        gs = _modules["generate_sequence"]
+        scaffold = _modules["scaffold_structure"]
+        num = int(epic.split("-")[1])
+        scaffold.create_epic(num, root=str(proj))
+        gs.add_epic(epic, root=str(proj))
+        for story_id, status, deps, outputs in stories:
+            data = make_minimal_story_data(story_id, epic)
+            if outputs is not None:
+                data["outputs"] = outputs
+            write_story_yaml(proj, epic, story_id, status, story_data=data)
+            gs.add_story(epic, story_id, dependencies=deps, root=str(proj))
+            if status != "backlog":
+                gs.update_status(story_id, status, root=str(proj))
+        if config is not None:
+            (proj / ".solution-factory" / "config.json").write_text(json.dumps(config))
+
+    def _run(self, proj, **kw):
+        return _modules["schedule_stories"].schedule(kw.pop("epic", "epic-01"), root=str(proj), **kw)
+
+    def _ids(self, entries):
+        return [e["id"] for e in entries]
+
+    def test_disjoint_ready_stories_all_start(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "backlog", [], {"modify": ["a.py"]}),
+            ("01.002", "backlog", [], {"create": ["b.py"]}),
+            ("01.003", "backlog", [], {"modify": ["c.py"]}),
+        ])
+        r = self._run(proj)
+        assert r["mode"] == "concurrent"
+        assert self._ids(r["startable"]) == ["01.001", "01.002", "01.003"]
+        assert r["held"] == []
+        assert r["free_slots"] == 0
+
+    def test_max_concurrent_limits_starts_in_sequence_order(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "backlog", [], {"modify": ["a.py"]}),
+            ("01.002", "backlog", [], {"modify": ["b.py"]}),
+            ("01.003", "backlog", [], {"modify": ["c.py"]}),
+        ], config={"epic_run": {"max_concurrent": 2}})
+        r = self._run(proj)
+        assert self._ids(r["startable"]) == ["01.001", "01.002"]
+        assert r["held"] == [{"id": "01.003", "reason": "no free slot"}]
+
+    def test_in_flight_stories_consume_slots_and_block_overlap(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "active", [], {"modify": ["a.py", "shared.py"]}),
+            ("01.002", "backlog", [], {"modify": ["shared.py"]}),
+            ("01.003", "backlog", [], {"modify": ["c.py"]}),
+        ])
+        r = self._run(proj)  # in_flight defaults to active stories
+        assert self._ids(r["in_flight"]) == ["01.001"]
+        assert self._ids(r["startable"]) == ["01.003"]
+        assert r["held"] == [{"id": "01.002", "reason": "shares shared.py with 01.001"}]
+        assert r["free_slots"] == 1
+
+    def test_explicit_in_flight_overrides_active_default(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "active", [], {"modify": ["a.py"]}),
+            ("01.002", "backlog", [], {"modify": ["b.py"]}),
+        ])
+        r = self._run(proj, in_flight=[])
+        assert r["in_flight"] == []
+        assert self._ids(r["startable"]) == ["01.002"]
+        assert r["free_slots"] == 2
+
+    def test_ready_stories_that_overlap_each_other_start_first_only(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "backlog", [], {"modify": ["utils.py"]}),
+            ("01.002", "backlog", [], {"modify": ["utils.py"]}),
+            ("01.003", "backlog", [], {"modify": ["other.py"]}),
+        ])
+        r = self._run(proj)
+        assert self._ids(r["startable"]) == ["01.001", "01.003"]
+        assert r["held"] == [{"id": "01.002", "reason": "shares utils.py with 01.001"}]
+
+    def test_unmet_dependency_holds_story(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "backlog", [], {"modify": ["a.py"]}),
+            ("01.002", "backlog", ["01.001"], {"modify": ["b.py"]}),
+        ])
+        r = self._run(proj)
+        assert self._ids(r["startable"]) == ["01.001"]
+        assert r["held"] == [{"id": "01.002", "reason": "waits for 01.001"}]
+
+    def test_cross_epic_dependency_resolved_globally(self, proj):
+        self._bootstrap(proj, [("01.001", "done", [], {"modify": ["a.py"]})], epic="epic-01")
+        self._bootstrap(proj, [("02.001", "backlog", ["01.001"], {"modify": ["b.py"]})], epic="epic-02")
+        r = self._run(proj, epic="epic-02")
+        assert self._ids(r["startable"]) == ["02.001"]
+
+    def test_story_without_outputs_runs_alone(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "backlog", [], None),
+            ("01.002", "backlog", [], {"modify": ["b.py"]}),
+        ])
+        r = self._run(proj)
+        assert self._ids(r["startable"]) == ["01.001"]
+        assert r["held"] == [{"id": "01.002", "reason": "01.001 declares no outputs and runs alone"}]
+        assert r["startable"][0]["files"] is None
+
+    def test_story_without_outputs_waits_for_empty_run(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "active", [], {"modify": ["a.py"]}),
+            ("01.002", "backlog", [], None),
+            ("01.003", "backlog", [], {"modify": ["c.py"]}),
+        ])
+        r = self._run(proj)
+        assert self._ids(r["startable"]) == ["01.003"]
+        assert r["held"] == [{"id": "01.002", "reason": "declares no outputs; waits until nothing is in flight (01.001)"}]
+
+    def test_shared_paths_excluded_from_overlap_check(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "backlog", [], {"modify": ["a.py", "CLAUDE.md", ".meteor/versions"]}),
+            ("01.002", "backlog", [], {"modify": ["b.py", "CLAUDE.md", ".meteor/versions"]}),
+        ], config={"epic_run": {"shared_paths": ["CLAUDE.md", ".meteor/*"]}})
+        r = self._run(proj)
+        assert self._ids(r["startable"]) == ["01.001", "01.002"]
+        assert r["startable"][0]["files"] == ["a.py"]
+
+    def test_default_shared_paths_ignore_solution_factory_tree(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "backlog", [], {"modify": [".solution-factory/decisions/adr-001.md", "a.py"]}),
+            ("01.002", "backlog", [], {"modify": [".solution-factory/decisions/adr-001.md", "b.py"]}),
+        ])
+        r = self._run(proj)
+        assert self._ids(r["startable"]) == ["01.001", "01.002"]
+
+    def test_outputs_made_only_of_shared_paths_count_as_undeclared(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "backlog", [], {"modify": [".solution-factory/x.md"]}),
+            ("01.002", "backlog", [], {"modify": ["b.py"]}),
+        ])
+        r = self._run(proj)
+        assert self._ids(r["startable"]) == ["01.001"]
+        assert r["open_stories"][0]["declared"] is False
+
+    def test_max_concurrent_one_reports_sequential_mode(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "backlog", [], {"modify": ["a.py"]}),
+            ("01.002", "backlog", [], {"modify": ["b.py"]}),
+        ], config={"epic_run": {"max_concurrent": 1}})
+        r = self._run(proj)
+        assert r["mode"] == "sequential"
+        assert self._ids(r["startable"]) == ["01.001"]
+        assert r["held"] == [{"id": "01.002", "reason": "no free slot"}]
+
+    def test_open_stories_table_covers_backlog_and_active_only(self, proj):
+        self._bootstrap(proj, [
+            ("01.001", "done", [], {"modify": ["a.py"]}),
+            ("01.002", "active", [], {"modify": ["b.py"]}),
+            ("01.003", "backlog", ["01.002"], {"create": ["c.py"], "modify": ["b.py"]}),
+            ("01.004", "deferred", [], None),
+        ])
+        r = self._run(proj)
+        assert self._ids(r["open_stories"]) == ["01.002", "01.003"]
+        row = r["open_stories"][1]
+        assert row == {
+            "id": "01.003", "title": "Story 01.003", "status": "backlog",
+            "files": ["b.py", "c.py"], "declared": True, "deps_pending": ["01.002"],
+        }
+
+    def test_missing_epic_and_missing_sequence_error(self, proj, tmp_path):
+        self._bootstrap(proj, [("01.001", "backlog", [], None)])
+        assert "error" in self._run(proj, epic="epic-99")
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        assert "error" in _modules["schedule_stories"].schedule("epic-01", root=str(empty))

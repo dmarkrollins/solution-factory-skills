@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Validate story structure: numbering format, complexity within threshold,
+Validate story structure: numbering format, complexity from 1 to threshold,
 valid dependencies (no cycles, no forward refs), required fields, no duplicates.
 """
 
@@ -21,6 +21,31 @@ def load_config(root="."):
         threshold = cfg.get("complexity", {}).get("threshold", 3)
         max_stories_per_epic = cfg.get("stories", {}).get("max_stories_per_epic", 10)
     return threshold, max_stories_per_epic
+
+
+def _check_outputs_shape(sid, outputs):
+    """Return error strings for a malformed `outputs` block.
+
+    Valid: {"create": [paths], "modify": [paths]} (either key may be absent),
+    every path a non-empty, repo-relative string with no `..` segments.
+    """
+    if not isinstance(outputs, dict):
+        return [f"Story {sid} outputs must be an object with 'create'/'modify' lists"]
+    errors = []
+    unknown = set(outputs) - {"create", "modify"}
+    if unknown:
+        errors.append(f"Story {sid} outputs has unknown keys: {sorted(unknown)}")
+    for key in ("create", "modify"):
+        paths = outputs.get(key, [])
+        if not isinstance(paths, list):
+            errors.append(f"Story {sid} outputs.{key} must be a list")
+            continue
+        for p in paths:
+            if not isinstance(p, str) or not p.strip():
+                errors.append(f"Story {sid} outputs.{key} contains a non-string or empty path")
+            elif p.startswith("/") or ".." in Path(p).parts:
+                errors.append(f"Story {sid} outputs.{key} path must be repo-relative: {p}")
+    return errors
 
 
 def validate(epic_id=None, root="."):
@@ -57,6 +82,12 @@ def validate(epic_id=None, root="."):
 
     for epic in epics:
         story_ids_in_order = []
+        # Declared-outputs bookkeeping for this epic: which stories declared
+        # nothing (they'll run alone in a concurrent /solution epic run) and
+        # which files several stories intend to modify (those stories can
+        # never run concurrently, whatever the scheduler does).
+        missing_outputs = []
+        modify_owners = {}
 
         # Per-epic story cap — forces large epics to be split into sequential epics
         story_count = len(epic.get("stories", []))
@@ -101,12 +132,38 @@ def validate(epic_id=None, root="."):
                     if field not in story_data:
                         errors.append(f"Story {sid} missing required field: {field}")
 
-                # Complexity check
+                # Complexity check. The scale is 1-based: complexity is
+                # 1 + dimension points, a whole number from 1 to threshold.
+                # Done stories written before the 1-based scale may still
+                # carry a 0, so the lower bound applies to open stories only.
                 complexity = story_data.get("complexity", 0)
-                if complexity > threshold:
+                if not isinstance(complexity, int) or isinstance(complexity, bool):
+                    errors.append(
+                        f"Story {sid} complexity {complexity!r} must be a whole number "
+                        f"from 1 to {threshold}"
+                    )
+                elif complexity > threshold:
                     errors.append(
                         f"Story {sid} complexity {complexity} exceeds threshold {threshold}"
                     )
+                elif complexity < 1 and status != "done":
+                    errors.append(
+                        f"Story {sid} complexity {complexity} is below the minimum of 1 "
+                        f"(complexity is 1 + dimension points, from 1 to {threshold})"
+                    )
+
+                # Declared outputs — optional, but when present the shape must
+                # be exactly what the concurrent scheduler reads.
+                outputs = story_data.get("outputs")
+                if outputs is None:
+                    if story["status"] in ("backlog", "active"):
+                        missing_outputs.append(sid)
+                else:
+                    errors.extend(_check_outputs_shape(sid, outputs))
+                    if isinstance(outputs, dict):
+                        for path in outputs.get("modify", []) or []:
+                            if isinstance(path, str):
+                                modify_owners.setdefault(path, []).append(sid)
 
             # Dependency validation — resolved against the GLOBAL story order,
             # never just the epic under validation. Cross-epic dependencies are
@@ -124,6 +181,19 @@ def validate(epic_id=None, root="."):
                     errors.append(
                         f"Story {sid} depends on {dep} which appears later in sequence (forward reference)"
                     )
+
+        if missing_outputs:
+            warnings.append(
+                f"Epic {epic['id']}: {len(missing_outputs)} open stories declare no outputs "
+                f"and will run one at a time in a concurrent epic run: {', '.join(missing_outputs)}"
+            )
+        for path, owners in sorted(modify_owners.items()):
+            if len(owners) > 1:
+                warnings.append(
+                    f"Epic {epic['id']}: hot file {path} is modified by {len(owners)} stories "
+                    f"({', '.join(owners)}) — they will never run concurrently; "
+                    f"consider splitting by file"
+                )
 
     # Cycle detection via topological sort. Build the graph from ALL epics so a
     # cycle that spans an epic boundary is actually traversable when validating

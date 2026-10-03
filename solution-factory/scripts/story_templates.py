@@ -11,13 +11,49 @@ from pathlib import Path
 from datetime import datetime
 
 
+def normalize_outputs(outputs):
+    """Normalize a story's declared file outputs to {"create": [...], "modify": [...]}.
+
+    `outputs` lists the repo-relative files a story expects to create or
+    modify. /solution epic uses it to decide which stories can run at the same
+    time (two in-flight stories must not share a file), so the shape is
+    strict: a dict with `create` and/or `modify` lists of path strings. Paths
+    are stripped and de-duplicated, order preserved. Returns None when the
+    story declares nothing, so the field is simply omitted from the JSON.
+    Raises ValueError on any other shape rather than silently writing
+    something the scheduler can't read.
+    """
+    if outputs is None:
+        return None
+    if not isinstance(outputs, dict):
+        raise ValueError("outputs must be an object with 'create' and/or 'modify' lists")
+    unknown = set(outputs) - {"create", "modify"}
+    if unknown:
+        raise ValueError(f"outputs has unknown keys: {sorted(unknown)} (allowed: create, modify)")
+    result = {}
+    for key in ("create", "modify"):
+        paths = outputs.get(key, [])
+        if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+            raise ValueError(f"outputs.{key} must be a list of path strings")
+        cleaned = []
+        for p in paths:
+            p = p.strip()
+            if p and p not in cleaned:
+                cleaned.append(p)
+        result[key] = cleaned
+    if not result["create"] and not result["modify"]:
+        return None
+    return result
+
+
 def generate_story_yaml(story_data, output_path):
     """Generate a story JSON file from structured data.
 
     story_data keys:
         id, title, epic, goal, acceptance (list), complexity (int),
         type (optional), wireframe (optional), dependencies (list),
-        outputs (list, optional), out_of_scope (list, optional),
+        outputs ({"create": [...], "modify": [...]}, optional — see
+        normalize_outputs), out_of_scope (list, optional),
         decisions (list of ADR ids), constraints (list of constraint ids),
         context (list of capsule names)
     """
@@ -44,9 +80,16 @@ def generate_story_yaml(story_data, output_path):
     }
 
     # Optional fields
-    for field in ["type", "wireframe", "outputs", "out_of_scope"]:
+    for field in ["type", "wireframe", "out_of_scope"]:
         if field in story_data and story_data[field]:
             story[field] = story_data[field]
+
+    try:
+        outputs = normalize_outputs(story_data.get("outputs"))
+    except ValueError as e:
+        return {"error": f"Story {story_data.get('id', '?')}: {e}"}
+    if outputs:
+        story["outputs"] = outputs
 
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)

@@ -42,8 +42,17 @@
                                  EPIC-5 instead of asking (default: true). Does not
                                  affect the interactive /solution complete command,
                                  which always asks.
+  epic_run.max_concurrent        How many stories /solution epic may work at once, each in
+                                 its own worktree slot. Only stories whose declared outputs
+                                 don't share a file run together (default: 3; 1 = sequential)
+  epic_run.shared_paths          Glob patterns for files every story touches (lockfiles,
+                                 CLAUDE.md, ...) ignored by the shared-file check
+                                 (default: [".solution-factory/**"])
+  epic_run.worktree_setup        Shell command run once per new worktree slot, e.g.
+                                 "npm ci && cp ../../.env ." (default: none)
   complexity.threshold           Max complexity score per story (default: 3)
-                                 Stories over threshold are split — no exceptions
+                                 Scores are 1-based: 1 (trivial) up to the threshold,
+                                 never 0. Stories over threshold are split — no exceptions
   relevance.auto_create          Discovery relevance score that triggers auto-promotion
                                  to a new ADR or constraint (default: 8)
   relevance.prompt               Score range requiring manual confirmation (default: 5)

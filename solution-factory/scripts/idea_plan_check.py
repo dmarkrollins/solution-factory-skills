@@ -7,7 +7,9 @@ read_idea_plan.py imports it rather than keeping a second copy, so the two
 can never drift out of sync. plan.md is freeform prose here (the technical
 approach is a design writeup, not a parseable story list -- story sizing
 happens later, in /create-stories), so the only things worth linting are:
-the section exists, and it isn't empty.
+the section exists, it isn't empty, and it doesn't slip into delivery
+planning (phases, size estimates, ship order) -- splitting work into
+deliverables is /create-stories's job alone.
 """
 
 import argparse
@@ -19,6 +21,41 @@ from pathlib import Path
 import idea_store
 
 _HEADING_RE = re.compile(r"^##\s+(.+?)\s*$")
+
+# Delivery-planning language that does not belong in a technical approach.
+# Deliberately NOT flagged: a bare mention of "story sizing" -- deferring a
+# question to that later pass is legitimate. These patterns catch the work
+# itself being split, sized, or ordered here.
+_DELIVERY_PLANNING_PATTERNS = [
+    (re.compile(r"\bphase\s+(\d+|[ivx]+|one|two|three)\b", re.I), "phase label"),
+    (re.compile(r"\b(milestone|sprint|tranche)s?\b", re.I), "milestone/sprint/tranche"),
+    (re.compile(r"\bepic[- ]sized\b|\bstory[- ]sized\b|\bsizing note\b", re.I), "size estimate"),
+    (re.compile(r"\bships?\s+(first|last|with|in)\b", re.I), "ship order"),
+    (re.compile(r"^#{1,6}\s*stories\b", re.I | re.M), "story list"),
+    (re.compile(r"\bcomplexity\s+(score|total)s?\b", re.I), "complexity score"),
+]
+
+
+def find_delivery_planning_language(text):
+    """Return warnings for phasing / sizing / ship-order language in text.
+
+    Lint only (never blocks promotion by itself): the caller decides. One
+    warning per pattern, quoting the first match so it is easy to find.
+    """
+    warnings = []
+    for pattern, label in _DELIVERY_PLANNING_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            warnings.append(
+                {
+                    "reason": (
+                        f"delivery-planning language ({label}): '{m.group(0)}' -- "
+                        "describe one technical design by component; splitting "
+                        "into phases/stories and sizing is /create-stories's job"
+                    ),
+                }
+            )
+    return warnings
 
 
 def _find_section(lines, name):
@@ -82,7 +119,8 @@ def check_plan(idea_id, root="."):
     return {
         "idea": idea_id,
         "technical_approach_present": bool(parsed["content"]),
-        "warnings": parsed["warnings"],
+        "warnings": parsed["warnings"]
+        + find_delivery_planning_language(parsed["content"]),
     }
 
 

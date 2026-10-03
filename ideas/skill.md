@@ -66,8 +66,10 @@ WHAT IT DOES
              agent (feasibility, design decisions, YAGNI trimming — not
              stories), then writes the confirmed draft into plan.md's
              Technical Approach section.
-  plan-check Checks plan.md has a non-empty '## Technical Approach' section.
-             Pure lint, never blocks — you decide whether to act on warnings.
+  plan-check Checks plan.md has a non-empty '## Technical Approach' section and
+             warns on phasing / size-estimate / ship-order language (that is
+             /create-stories's job). Pure lint, never blocks — you decide
+             whether to act on warnings.
 
 IDEA STATE MACHINE
   raw -> triaged -> planning -> planned -> promoted
@@ -102,7 +104,8 @@ NEXT STEP
 3. ```bash
    python3 ~/.claude/skills/solution-factory/scripts/idea_store.py add --title "<title>" --body "<body>" --root .
    ```
-4. Report the allocated ID: "Captured as IDEA-NNN."
+4. Capture the idea as the user described it — do not add "suggested phasing", size estimates, or a delivery order to the body. Splitting work is `/create-stories`'s job.
+5. Report the allocated ID: "Captured as IDEA-NNN."
 
 ---
 
@@ -188,9 +191,23 @@ Use the Agent tool with `subagent_type=technical-architect`, **model=sonnet**. P
 
 The agent returns a feasibility read plus a technical approach writeup (what to build, what to leave out per YAGNI, key design decisions, risks/open questions). It does **not** draft stories, assign complexity scores, or write files — that sizing work belongs to `/create-stories --from-idea` later, once the epic exists.
 
+**No delivery planning (applies to the agent's draft, to `plan.md`, and to you).** Repeat this to the agent verbatim in its prompt:
+
+```
+Describe ONE technical design as a whole. Do not split it into phases,
+milestones, stages, releases, or "ships first/last". Do not estimate size
+("epic-sized", "small", "large") or say how many stories or epics it needs.
+Do not present build order as a sequence of deliverables. A design fact like
+"the resolver must exist before handlers can call it" is fine as a note on
+that component, never as a delivery order. Organize by component or concern
+(data model, access checks, email, UI, docs, risks). If a heading contains
+"Phase", "Step N", "Milestone" or "Sprint", rewrite it. Splitting the work
+into deliverables is /create-stories's job alone.
+```
+
 ## 5. Review and Write
 
-1. Review the draft with the user — challenge scope creep, confirm the YAGNI cuts make sense, resolve any flagged risks/open questions you can resolve now.
+1. Review the draft with the user — challenge scope creep, confirm the YAGNI cuts make sense, resolve any flagged risks/open questions you can resolve now. Before writing, strip any phasing, size estimates ("epic-sized"), "ships first/last" or delivery-order language from the draft. The same rule holds for any later edit to `plan.md` you make at the user's request: never introduce it.
 2. Once confirmed, write (or create, if this is the idea's first plan) `.solution-factory/ideas/<id>/plan.md` with a `## Technical Approach` section containing the agent's feasibility notes and approach writeup, via the Write/Edit tool. This file stays hand-editable afterward — the user can tweak it directly before promoting.
 
 ## 6. Lint and Confirm
@@ -199,7 +216,7 @@ The agent returns a feasibility read plus a technical approach writeup (what to 
 python3 ~/.claude/skills/solution-factory/scripts/idea_plan_check.py plan-check <id> --root .
 ```
 
-- If `warnings[]` is non-empty (section missing or empty) or `technical_approach_present` is `false`, fix `plan.md` before proceeding — `/create-stories --from-idea` needs real content here to ground its own story-drafting step.
+- If `warnings[]` is non-empty (section missing or empty, or phasing / size-estimate / ship-order language found) or `technical_approach_present` is `false`, fix `plan.md` before proceeding — `/create-stories --from-idea` needs real content here to ground its own story-drafting step.
 - Once clean, ask the user to confirm the plan is ready.
 3. ```bash
    python3 ~/.claude/skills/solution-factory/scripts/idea_store.py set-state <id> --state planned --root .
