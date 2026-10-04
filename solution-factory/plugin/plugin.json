@@ -1,0 +1,24 @@
+{
+  "name": "solution-factory",
+  "displayName": "Solution Factory",
+  "version": "1.0.0",
+  "description": "Structured software delivery for Claude Code: capture decisions and constraints, break epics into small scored stories, then implement them one at a time or as an unattended epic run with planning, testing, code review and security review gates.",
+  "author": {
+    "name": "6thcents",
+    "email": "info@sdcsol.com",
+    "url": "https://github.com/6thcents"
+  },
+  "homepage": "https://github.com/6thcents/claude-plugins/tree/main/plugins/solution-factory",
+  "repository": "https://github.com/6thcents/claude-plugins",
+  "license": "MIT",
+  "keywords": [
+    "planning",
+    "stories",
+    "epics",
+    "workflow",
+    "adr",
+    "code-review",
+    "autonomous",
+    "delivery"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "6thcents",
+  "description": "Claude Code plugins from 6thcents",
+  "owner": {
+    "name": "6thcents",
+    "email": "info@sdcsol.com",
+    "url": "https://github.com/6thcents"
+  },
+  "plugins": []
+}
